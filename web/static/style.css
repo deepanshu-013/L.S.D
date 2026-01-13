@@ -12,7 +12,7 @@ body {
 }
 
 .container {
-    max-width: 1400px;
+    max-width: 1600px;
     margin: 0 auto;
     padding: 2rem;
 }
@@ -55,10 +55,11 @@ header h1 {
 }
 
 .stat-value {
-    font-size: 2rem;
+    font-size: 1.75rem;
     font-weight: bold;
     color: #00d9ff;
     margin-bottom: 0.5rem;
+    word-break: break-all;
 }
 
 .stat-label {
@@ -72,7 +73,29 @@ header h1 {
     display: flex;
     flex-wrap: wrap;
     gap: 1rem;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1rem;
+    align-items: flex-end;
+}
+
+.table-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.table-selector label {
+    color: #888;
+    font-size: 0.9rem;
+}
+
+.table-selector select {
+    padding: 0.75rem 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 1rem;
+    min-width: 250px;
 }
 
 .search-box {
@@ -96,7 +119,7 @@ header h1 {
     color: #666;
 }
 
-.search-box button, .filters select {
+.search-box button {
     padding: 0.75rem 1.5rem;
     border: none;
     border-radius: 8px;
@@ -111,35 +134,71 @@ header h1 {
     background: #00b8d9;
 }
 
-.filters {
+.filters-row {
     display: flex;
-    gap: 0.5rem;
     flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1rem;
 }
 
-.filters select {
+.filter-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.filter-item label {
+    color: #888;
+    font-size: 0.8rem;
+}
+
+.filter-item input {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #fff;
+    font-size: 0.9rem;
+    min-width: 150px;
+}
+
+.sort-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.sort-controls select {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
     background: rgba(255, 255, 255, 0.1);
     color: #e0e0e0;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    font-size: 0.9rem;
 }
 
 .table-container {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 12px;
-    overflow: hidden;
+    overflow-x: auto;
     margin-bottom: 1.5rem;
 }
 
 table {
     width: 100%;
     border-collapse: collapse;
+    min-width: 800px;
 }
 
 th, td {
-    padding: 1rem;
+    padding: 0.75rem 1rem;
     text-align: left;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    white-space: nowrap;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 th {
@@ -147,18 +206,23 @@ th {
     color: #00d9ff;
     font-weight: 600;
     text-transform: uppercase;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     letter-spacing: 1px;
+    position: sticky;
+    top: 0;
+}
+
+th small {
+    display: block;
+    font-weight: normal;
+    color: #666;
+    text-transform: lowercase;
+    font-size: 0.7rem;
 }
 
 tr:hover {
     background: rgba(255, 255, 255, 0.02);
 }
-
-.status-active { color: #4caf50; }
-.status-pending { color: #ff9800; }
-.status-completed { color: #2196f3; }
-.status-cancelled { color: #f44336; }
 
 .pagination {
     display: flex;
@@ -224,8 +288,8 @@ tr:hover {
     padding: 0.25rem 0.75rem;
     border-radius: 4px;
     font-family: 'Fira Code', monospace;
-    font-size: 0.9rem;
-    min-width: 220px;
+    font-size: 0.85rem;
+    min-width: 280px;
 }
 
 .endpoint span {
@@ -253,5 +317,9 @@ tr:hover {
     .endpoint {
         flex-direction: column;
         align-items: flex-start;
+    }
+    
+    .table-selector select {
+        min-width: 100%;
     }
 }

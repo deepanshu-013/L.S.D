@@ -112,15 +112,21 @@ func (h *BotHandler) processCommand(r *http.Request, text string) string {
 }
 
 func (h *BotHandler) helpMessage() string {
-	return `Available commands:
-/list [category] - List records (optionally filter by category)
-/search <term> - Search records by name
-/get <id> - Get record details by ID
-/stats - Get database statistics
-/help - Show this help message`
+	return `Dynamic API Bot - Available commands:
+/list [table] - List records from a table
+/search <table> <term> - Search records
+/get <table> <id> - Get record details by ID
+/stats - Get API statistics
+/help - Show this help message
+
+This bot works with any table in your database!`
 }
 
 func (h *BotHandler) handleList(r *http.Request, args []string) string {
+	if h.service == nil {
+		return "Bot service not configured. Use the API directly at /api/tables"
+	}
+
 	params := models.QueryParams{
 		Limit:   10,
 		Filters: make(map[string]string),
@@ -162,6 +168,10 @@ func (h *BotHandler) handleSearch(r *http.Request, args []string) string {
 		return "Usage: /search <term>"
 	}
 
+	if h.service == nil {
+		return "Bot service not configured. Use the API directly at /api/tables/{table}/search?q=term"
+	}
+
 	searchTerm := strings.Join(args, " ")
 	if len(searchTerm) < 2 {
 		return "Search term must be at least 2 characters."
@@ -197,6 +207,10 @@ func (h *BotHandler) handleGet(r *http.Request, args []string) string {
 		return "Usage: /get <id>"
 	}
 
+	if h.service == nil {
+		return "Bot service not configured. Use the API directly at /api/tables/{table}/records/{id}"
+	}
+
 	id, err := strconv.ParseInt(args[0], 10, 64)
 	if err != nil {
 		return "Invalid ID. Please provide a numeric ID."
@@ -223,6 +237,10 @@ Created: %s`,
 }
 
 func (h *BotHandler) handleStats(r *http.Request) string {
+	if h.service == nil {
+		return "Bot service not configured. Use the API directly at /api/tables to list all tables."
+	}
+
 	stats, err := h.service.GetStats(r.Context())
 	if err != nil {
 		return "Error fetching statistics. Please try again."

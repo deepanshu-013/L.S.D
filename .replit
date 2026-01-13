@@ -1,4 +1,4 @@
-modules = ["go-1.24"]
+modules = ["go-1.24", "postgresql-16"]
 [agent]
 expertMode = true
 
@@ -8,10 +8,6 @@ packages = ["redis"]
 
 [[ports]]
 localPort = 5000
-externalPort = 80
-
-[[ports]]
-localPort = 6379
 externalPort = 80
 
 [workflows]
@@ -24,10 +20,10 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Go API Server"
+args = "Dynamic API Server"
 
 [[workflows.workflow]]
-name = "Go API Server"
+name = "Dynamic API Server"
 author = "agent"
 
 [[workflows.workflow.tasks]]

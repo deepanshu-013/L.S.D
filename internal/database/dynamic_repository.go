@@ -1,0 +1,188 @@
+package database
+
+import (
+	"context"
+	"fmt"
+
+	"highperf-api/internal/schema"
+)
+
+type DynamicRepository struct {
+	pool         *Pool
+	registry     *schema.SchemaRegistry
+	queryBuilder *schema.QueryBuilder
+}
+
+func NewDynamicRepository(pool *Pool, registry *schema.SchemaRegistry) *DynamicRepository {
+	return &DynamicRepository{
+		pool:         pool,
+		registry:     registry,
+		queryBuilder: schema.NewQueryBuilder(registry),
+	}
+}
+
+type DynamicResult struct {
+	Data       []map[string]interface{}
+	NextCursor string
+	HasMore    bool
+	Count      int
+}
+
+func (r *DynamicRepository) GetRecords(ctx context.Context, params schema.QueryParams) (*DynamicResult, error) {
+	builtQuery, err := r.queryBuilder.BuildSelectQuery(params)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := r.pool.Query(ctx, builtQuery.SQL, builtQuery.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var records []map[string]interface{}
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return nil, fmt.Errorf("values failed: %w", err)
+		}
+
+		record := make(map[string]interface{})
+		for i, col := range builtQuery.Columns {
+			record[col] = values[i]
+		}
+		records = append(records, record)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	limit := params.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	var nextCursor string
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+		lastRecord := records[len(records)-1]
+		nextCursor = r.queryBuilder.EncodeCursor(params.TableName, lastRecord, builtQuery.SortColumn)
+	}
+
+	return &DynamicResult{
+		Data:       records,
+		NextCursor: nextCursor,
+		HasMore:    hasMore,
+		Count:      len(records),
+	}, nil
+}
+
+func (r *DynamicRepository) GetRecordByPK(ctx context.Context, tableName string, pkValue interface{}) (map[string]interface{}, error) {
+	builtQuery, err := r.queryBuilder.BuildGetByPKQuery(tableName, pkValue)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := r.pool.Query(ctx, builtQuery.SQL, builtQuery.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return nil, nil
+	}
+
+	values, err := rows.Values()
+	if err != nil {
+		return nil, fmt.Errorf("values failed: %w", err)
+	}
+
+	record := make(map[string]interface{})
+	for i, col := range builtQuery.Columns {
+		record[col] = values[i]
+	}
+
+	return record, nil
+}
+
+func (r *DynamicRepository) SearchRecords(ctx context.Context, params schema.QueryParams, searchColumn, searchTerm string) (*DynamicResult, error) {
+	builtQuery, err := r.queryBuilder.BuildSearchQuery(params, searchColumn, searchTerm)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := r.pool.Query(ctx, builtQuery.SQL, builtQuery.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var records []map[string]interface{}
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return nil, fmt.Errorf("values failed: %w", err)
+		}
+
+		record := make(map[string]interface{})
+		for i, col := range builtQuery.Columns {
+			record[col] = values[i]
+		}
+		records = append(records, record)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	limit := params.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	var nextCursor string
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+		lastRecord := records[len(records)-1]
+		nextCursor = r.queryBuilder.EncodeCursor(params.TableName, lastRecord, builtQuery.SortColumn)
+	}
+
+	return &DynamicResult{
+		Data:       records,
+		NextCursor: nextCursor,
+		HasMore:    hasMore,
+		Count:      len(records),
+	}, nil
+}
+
+func (r *DynamicRepository) GetTableStats(ctx context.Context, tableName string) (map[string]interface{}, error) {
+	table := r.registry.GetTable(tableName)
+	if table == nil {
+		return nil, fmt.Errorf("table not found: %s", tableName)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			COUNT(*) as total_count
+		FROM %s
+	`, tableName)
+
+	var totalCount int64
+	err := r.pool.QueryRow(ctx, query).Scan(&totalCount)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+
+	return map[string]interface{}{
+		"table_name":   tableName,
+		"total_count":  totalCount,
+		"column_count": len(table.Columns),
+		"columns":      table.Columns,
+		"primary_key":  table.PrimaryKey,
+		"indexes":      table.Indexes,
+	}, nil
+}

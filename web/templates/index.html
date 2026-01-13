@@ -3,81 +3,67 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>High-Performance API Dashboard</title>
+    <title>Dynamic API Dashboard</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>High-Performance API Dashboard</h1>
-            <p class="subtitle">PostgreSQL + Redis | Keyset Pagination | Go Backend</p>
+            <h1>Dynamic API Dashboard</h1>
+            <p class="subtitle">Auto-discovered PostgreSQL Schema | Keyset Pagination | Go Backend</p>
         </header>
 
         <div class="stats-container" id="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="total-tables">-</div>
+                <div class="stat-label">Tables Discovered</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="current-table">-</div>
+                <div class="stat-label">Selected Table</div>
+            </div>
             <div class="stat-card">
                 <div class="stat-value" id="total-records">-</div>
                 <div class="stat-label">Total Records</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value" id="categories">-</div>
-                <div class="stat-label">Categories</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="total-value">-</div>
-                <div class="stat-label">Total Value</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="avg-value">-</div>
-                <div class="stat-label">Average Value</div>
+                <div class="stat-value" id="total-columns">-</div>
+                <div class="stat-label">Columns</div>
             </div>
         </div>
 
         <div class="controls">
+            <div class="table-selector">
+                <label>Select Table:</label>
+                <select id="table-select" onchange="selectTable()">
+                    <option value="">Loading tables...</option>
+                </select>
+            </div>
             <div class="search-box">
                 <input type="text" id="search-input" placeholder="Search records...">
                 <button onclick="searchRecords()">Search</button>
             </div>
-            <div class="filters">
-                <select id="category-filter" onchange="loadRecords()">
-                    <option value="">All Categories</option>
-                    <option value="electronics">Electronics</option>
-                    <option value="clothing">Clothing</option>
-                    <option value="food">Food</option>
-                    <option value="services">Services</option>
-                    <option value="software">Software</option>
-                </select>
-                <select id="status-filter" onchange="loadRecords()">
-                    <option value="">All Statuses</option>
-                    <option value="active">Active</option>
-                    <option value="pending">Pending</option>
-                    <option value="completed">Completed</option>
-                    <option value="cancelled">Cancelled</option>
-                </select>
-                <select id="sort-by" onchange="loadRecords()">
-                    <option value="id">Sort by ID</option>
-                    <option value="name">Sort by Name</option>
-                    <option value="created_at">Sort by Date</option>
-                </select>
-                <select id="sort-dir" onchange="loadRecords()">
-                    <option value="asc">Ascending</option>
-                    <option value="desc">Descending</option>
-                </select>
-            </div>
+        </div>
+
+        <div class="filters-row" id="filters-row">
+        </div>
+
+        <div class="sort-controls">
+            <select id="sort-by" onchange="loadRecords()">
+                <option value="">Sort by...</option>
+            </select>
+            <select id="sort-dir" onchange="loadRecords()">
+                <option value="asc">Ascending</option>
+                <option value="desc">Descending</option>
+            </select>
         </div>
 
         <div class="table-container">
             <table id="records-table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Name</th>
-                        <th>Category</th>
-                        <th>Status</th>
-                        <th>Value</th>
-                        <th>Created</th>
-                    </tr>
+                <thead id="table-head">
                 </thead>
                 <tbody id="records-body">
+                    <tr><td colspan="10" style="text-align: center; padding: 2rem;">Select a table to view records</td></tr>
                 </tbody>
             </table>
         </div>
@@ -89,31 +75,31 @@
         </div>
 
         <div class="api-info">
-            <h2>API Endpoints</h2>
+            <h2>Dynamic API Endpoints</h2>
             <div class="endpoint-list">
                 <div class="endpoint">
-                    <code>GET /api/records</code>
-                    <span>List records with pagination and filters</span>
+                    <code>GET /api/tables</code>
+                    <span>List all discovered tables</span>
                 </div>
                 <div class="endpoint">
-                    <code>GET /api/records/{id}</code>
-                    <span>Get single record by ID</span>
+                    <code>GET /api/tables/{table}/schema</code>
+                    <span>Get table schema and columns</span>
                 </div>
                 <div class="endpoint">
-                    <code>GET /api/search?q=term</code>
-                    <span>Search records by name</span>
+                    <code>GET /api/tables/{table}/records</code>
+                    <span>List records with pagination</span>
                 </div>
                 <div class="endpoint">
-                    <code>GET /api/stats</code>
-                    <span>Get database statistics</span>
+                    <code>GET /api/tables/{table}/records/{pk}</code>
+                    <span>Get single record by primary key</span>
                 </div>
                 <div class="endpoint">
-                    <code>POST /webhook/telegram</code>
-                    <span>Telegram bot webhook</span>
+                    <code>GET /api/tables/{table}/search?q=term</code>
+                    <span>Search records</span>
                 </div>
                 <div class="endpoint">
-                    <code>POST /webhook/whatsapp</code>
-                    <span>WhatsApp bot webhook</span>
+                    <code>GET /api/tables/{table}/stats</code>
+                    <span>Get table statistics</span>
                 </div>
             </div>
         </div>

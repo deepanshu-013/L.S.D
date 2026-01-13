@@ -1,23 +1,25 @@
-# High-Performance Go API
+# High-Performance Dynamic Go API
 
 ## Overview
-A production-grade Go API designed for large-scale PostgreSQL databases (2+ TB). It serves web GUI, Telegram bot, and WhatsApp bot clients with fast, safe, and scalable data access.
+A production-grade Go API that automatically adapts to any PostgreSQL database schema by discovering tables and columns at runtime. Designed for large-scale databases (2+ TB) serving web GUI, Telegram bot, and WhatsApp bot clients with fast, safe, and scalable data access.
 
 ## Architecture
 
 ### Core Technologies
 - **Go 1.24** - Primary backend language
 - **PostgreSQL** - Single source of truth database
-- **Redis** - Caching layer with read-first strategy
+- **Redis** - Caching layer with 30-second TTL
 - **pgx** - PostgreSQL driver with connection pooling
 
 ### Key Features
-- Keyset (cursor-based) pagination - O(1) performance at any scale
-- Redis caching with 30-second TTL
-- Rate limiting per client IP
-- Whitelisted filters and sort columns
-- Strict input validation
-- Context-based query timeouts
+- **Dynamic Schema Discovery** - Auto-discovers tables, columns, primary keys, and indexes at startup
+- **Keyset (cursor-based) pagination** - O(1) performance at any scale
+- **Type-aware cursor encoding** - Correctly handles timestamps, integers, decimals, and text
+- **Redis caching** with 30-second TTL
+- **Rate limiting** per client IP
+- **Whitelisted filters/sort** - Only leading indexed columns allowed
+- **Strict input validation**
+- **Context-based query timeouts**
 
 ## Project Structure
 ```
@@ -31,16 +33,17 @@ internal/
     config.go         # Configuration management
   database/
     pool.go           # PostgreSQL connection pool
-    repository.go     # Data access layer with keyset pagination
+    dynamic_repository.go  # Dynamic data access layer
   handlers/
-    api_handlers.go   # REST API handlers
-    bot_handlers.go   # Telegram/WhatsApp webhook handlers
+    dynamic_handlers.go    # Dynamic REST API handlers
+    bot_handlers.go        # Telegram/WhatsApp webhook handlers
   middleware/
     middleware.go     # Rate limiting, logging, CORS, etc.
   models/
     models.go         # Data models and types
-  pagination/
-    cursor.go         # Opaque cursor encoding/decoding
+  schema/
+    loader.go         # Schema discovery from PostgreSQL metadata
+    query_builder.go  # Type-aware query builder with cursor pagination
   services/
     record_service.go # Business logic layer
 web/
@@ -53,42 +56,41 @@ web/
 
 ## API Endpoints
 
-### REST API
-- `GET /api/records` - List records with pagination
-  - Query params: `cursor`, `limit` (max 50), `sort_by`, `sort_dir`, `category`, `status`
-- `GET /api/records/{id}` - Get single record by ID
-- `GET /api/search?q=term` - Search records by name
-- `GET /api/stats` - Get database statistics
+### Dynamic REST API
+- `GET /api/tables` - List all discovered tables
+- `GET /api/tables/{table}/schema` - Get table schema and columns
+- `GET /api/tables/{table}/records` - List records with pagination
+  - Query params: `cursor`, `limit` (max 50), `sort_by`, `sort_dir`, plus any indexed column for filtering
+- `GET /api/tables/{table}/records/{pk}` - Get single record by primary key
+- `GET /api/tables/{table}/search?q=term` - Search records by text columns
+- `GET /api/tables/{table}/stats` - Get table statistics
 - `GET /api/health` - Health check
 
 ### Webhooks
 - `POST /webhook/telegram` - Telegram bot webhook
-- `POST /webhook/whatsapp` - WhatsApp bot webhook
+- `GET/POST /webhook/whatsapp` - WhatsApp bot webhook
 
 ## Bot Commands
-- `/list [category]` - List records
-- `/search <term>` - Search records
-- `/get <id>` - Get record details
-- `/stats` - Database statistics
+- `/list [table]` - List records from a table
+- `/search <table> <term>` - Search records
+- `/get <table> <id>` - Get record details
+- `/stats` - API statistics
 - `/help` - Show help message
 
 ## Query Rules (Enforced)
-- Never uses SELECT *
+- Never uses SELECT * (always explicit columns)
 - Never uses OFFSET pagination
 - Always uses LIMIT (hard max: 50)
 - Always uses keyset pagination
-- Queries use indexed columns only
+- Only leading indexed columns allowed for sorting/filtering
 - Streaming rows with pgx.Rows
 
-## Indexes
-```sql
-CREATE INDEX idx_records_category ON records(category);
-CREATE INDEX idx_records_status ON records(status);
-CREATE INDEX idx_records_created_at ON records(created_at);
-CREATE INDEX idx_records_name ON records(name);
-CREATE INDEX idx_records_category_created_at ON records(category, created_at);
-CREATE INDEX idx_records_status_id ON records(status, id);
-```
+## Schema Discovery
+At startup, the API queries PostgreSQL metadata to discover:
+- All user tables (excluding pg_catalog, information_schema)
+- Column names, types, and nullability
+- Primary key columns (ordered)
+- Leading indexed columns (for safe sorting/filtering)
 
 ## Environment Variables
 - `DATABASE_URL` - PostgreSQL connection string (required)
@@ -99,6 +101,9 @@ CREATE INDEX idx_records_status_id ON records(status, id);
 - `SESSION_SECRET` - Session secret for security
 
 ## Recent Changes
+- 2026-01-13: Implemented dynamic schema discovery with leading index detection
+- 2026-01-13: Fixed composite cursor pagination for multi-column primary keys
+- 2026-01-13: Restricted sorting/filtering to leading indexed columns only
 - 2026-01-13: Initial implementation with full feature set
 
 ## Running the Application
@@ -112,3 +117,4 @@ redis-server --daemonize yes --port 6379; go run ./cmd/api
 - Supports read replicas without code changes
 - Horizontal scaling ready
 - Supports partitioned PostgreSQL tables
+- Works with any database schema without code changes

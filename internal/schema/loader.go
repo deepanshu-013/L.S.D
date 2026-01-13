@@ -18,11 +18,12 @@ type ColumnInfo struct {
 }
 
 type TableInfo struct {
-	Name       string       `json:"name"`
-	Schema     string       `json:"schema"`
-	Columns    []ColumnInfo `json:"columns"`
-	PrimaryKey []string     `json:"primary_key"`
-	Indexes    []string     `json:"indexed_columns"`
+	Name           string       `json:"name"`
+	Schema         string       `json:"schema"`
+	Columns        []ColumnInfo `json:"columns"`
+	PrimaryKey     []string     `json:"primary_key"`
+	Indexes        []string     `json:"indexed_columns"`
+	LeadingIndexes []string     `json:"leading_indexed_columns"`
 }
 
 type SchemaRegistry struct {
@@ -65,6 +66,12 @@ func (r *SchemaRegistry) LoadSchema(ctx context.Context) error {
 			return fmt.Errorf("failed to discover indexes for %s: %w", table.Name, err)
 		}
 		table.Indexes = indexes
+
+		leadingIndexes, err := r.discoverLeadingIndexedColumns(ctx, table.Schema, table.Name)
+		if err != nil {
+			return fmt.Errorf("failed to discover leading indexes for %s: %w", table.Name, err)
+		}
+		table.LeadingIndexes = leadingIndexes
 
 		for i := range table.Columns {
 			for _, pk := range table.PrimaryKey {
@@ -203,6 +210,36 @@ func (r *SchemaRegistry) discoverIndexedColumns(ctx context.Context, schema, tab
 	return indexedCols, rows.Err()
 }
 
+func (r *SchemaRegistry) discoverLeadingIndexedColumns(ctx context.Context, schema, tableName string) ([]string, error) {
+	query := `
+		SELECT DISTINCT a.attname
+		FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+		JOIN pg_class c ON c.oid = i.indrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = $1
+		AND c.relname = $2
+		ORDER BY a.attname
+	`
+
+	rows, err := r.pool.Query(ctx, query, schema, tableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var leadingCols []string
+	for rows.Next() {
+		var colName string
+		if err := rows.Scan(&colName); err != nil {
+			return nil, err
+		}
+		leadingCols = append(leadingCols, colName)
+	}
+
+	return leadingCols, rows.Err()
+}
+
 func (r *SchemaRegistry) GetTable(name string) *TableInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -233,10 +270,18 @@ func (r *SchemaRegistry) GetSortableColumns(tableName string) []string {
 		return nil
 	}
 
+	seen := make(map[string]bool)
 	var sortable []string
-	for _, col := range table.Columns {
-		if col.IsIndexed || col.IsPrimary {
-			sortable = append(sortable, col.Name)
+	for _, col := range table.LeadingIndexes {
+		if !seen[col] {
+			sortable = append(sortable, col)
+			seen[col] = true
+		}
+	}
+	for _, col := range table.PrimaryKey {
+		if !seen[col] {
+			sortable = append(sortable, col)
+			seen[col] = true
 		}
 	}
 	return sortable

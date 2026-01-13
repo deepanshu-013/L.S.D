@@ -1,2 +1,39 @@
+modules = ["go-1.24"]
 [agent]
 expertMode = true
+
+[nix]
+channel = "stable-25_05"
+packages = ["redis"]
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 6379
+externalPort = 80
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Go API Server"
+
+[[workflows.workflow]]
+name = "Go API Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "redis-server --daemonize yes --port 6379 2>/dev/null; go run ./cmd/api"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"

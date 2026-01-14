@@ -26,6 +26,7 @@ async function loadTables() {
         }
 
         await loadHealthStatus();
+        await loadCDCStatus();
     } catch (error) {
         console.error('Error loading tables:', error);
     }
@@ -45,17 +46,37 @@ async function loadHealthStatus() {
         const chStatus = document.getElementById('clickhouse-status');
         chStatus.textContent = health.clickhouse ? 'Connected' : 'Not Available';
         chStatus.className = 'status-badge ' + (health.clickhouse ? 'status-ok' : 'status-off');
-        
-        const cdcStatus = document.getElementById('cdc-status');
-        if (health.clickhouse) {
-            cdcStatus.textContent = 'Running';
-            cdcStatus.className = 'status-badge status-ok';
-        } else {
-            cdcStatus.textContent = 'Disabled';
-            cdcStatus.className = 'status-badge status-off';
-        }
     } catch (error) {
         console.error('Error loading health status:', error);
+    }
+}
+
+async function loadCDCStatus() {
+    try {
+        const response = await fetch('/api/cdc/status');
+        const cdc = await response.json();
+        
+        const cdcStatus = document.getElementById('cdc-status');
+        const cdcTables = document.getElementById('cdc-tables');
+        
+        if (cdc.is_running) {
+            cdcStatus.textContent = 'Running';
+            cdcStatus.className = 'status-badge status-ok';
+            cdcTables.textContent = `(${cdc.total_tables} tables)`;
+        } else if (cdc.available === false) {
+            cdcStatus.textContent = 'Disabled';
+            cdcStatus.className = 'status-badge status-off';
+            cdcTables.textContent = '';
+        } else {
+            cdcStatus.textContent = 'Stopped';
+            cdcStatus.className = 'status-badge status-off';
+            cdcTables.textContent = '';
+        }
+    } catch (error) {
+        console.error('Error loading CDC status:', error);
+        const cdcStatus = document.getElementById('cdc-status');
+        cdcStatus.textContent = 'Unknown';
+        cdcStatus.className = 'status-badge status-unknown';
     }
 }
 
@@ -66,7 +87,7 @@ async function selectTable() {
     if (!currentTable) {
         document.getElementById('current-table').textContent = '-';
         document.getElementById('total-records').textContent = '-';
-        document.getElementById('ch-indexed').textContent = '-';
+        document.getElementById('total-columns').textContent = '-';
         return;
     }
     
@@ -86,6 +107,8 @@ async function loadTableSchema() {
     try {
         const response = await fetch(`/api/tables/${currentTable}/schema`);
         tableSchema = await response.json();
+        
+        document.getElementById('total-columns').textContent = tableSchema.columns.length;
         
         searchableColumns = tableSchema.searchable || [];
         
@@ -116,13 +139,6 @@ async function loadTableStats() {
         const count = stats.estimated_count || stats.total_count || 0;
         const countType = stats.count_type === 'estimated' ? '~' : '';
         document.getElementById('total-records').textContent = countType + formatNumber(count);
-        
-        const chIndexed = document.getElementById('ch-indexed');
-        if (stats.clickhouse_indexed !== undefined) {
-            chIndexed.textContent = formatNumber(stats.clickhouse_indexed);
-        } else {
-            chIndexed.textContent = '-';
-        }
     } catch (error) {
         console.error('Error loading stats:', error);
     }

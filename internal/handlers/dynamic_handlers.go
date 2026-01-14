@@ -20,6 +20,7 @@ type DynamicHandler struct {
         registry     *schema.SchemaRegistry
         cache        *cache.RedisCache
         chSearch     *chpkg.SearchRepository
+        cdcManager   *chpkg.CDCManager
         maxPageSize  int
         defaultSize  int
         timeout      time.Duration
@@ -35,6 +36,25 @@ func NewDynamicHandler(repo *database.DynamicRepository, registry *schema.Schema
                 defaultSize: defaultSize,
                 timeout:     timeout,
         }
+}
+
+func (h *DynamicHandler) SetCDCManager(cdcManager *chpkg.CDCManager) {
+        h.cdcManager = cdcManager
+}
+
+func (h *DynamicHandler) GetCDCStatus(w http.ResponseWriter, r *http.Request) {
+        if h.cdcManager == nil {
+                h.writeJSON(w, http.StatusOK, map[string]interface{}{
+                        "is_running":     false,
+                        "available":      false,
+                        "total_tables":   0,
+                        "table_statuses": map[string]interface{}{},
+                })
+                return
+        }
+
+        status := h.cdcManager.GetStatus()
+        h.writeJSON(w, http.StatusOK, status)
 }
 
 func (h *DynamicHandler) ListTables(w http.ResponseWriter, r *http.Request) {

@@ -71,9 +71,11 @@ web/
 - `GET /api/tables/{table}/records` - List records with pagination
   - Query params: `cursor`, `limit` (max 50), `sort_by`, `sort_dir`, plus any indexed column for filtering
 - `GET /api/tables/{table}/records/{pk}` - Get single record by primary key
-- `GET /api/tables/{table}/search?q=term&columns=col1,col2` - Multi-column search
+- `GET /api/tables/{table}/search?q=term&engine=auto` - Multi-column search
+  - `engine` param: `auto` (default), `clickhouse`, or `postgresql` for manual engine selection
 - `GET /api/tables/{table}/stats` - Get table statistics (uses estimated count)
-- `GET /api/health` - Health check
+- `GET /api/cdc/status` - CDC pipeline status with per-table sync metrics
+- `GET /api/health` - Health check (includes Redis and ClickHouse status)
 
 ### Webhooks
 - `POST /webhook/telegram` - Telegram bot webhook

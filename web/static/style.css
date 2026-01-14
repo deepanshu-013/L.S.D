@@ -78,6 +78,11 @@ header h1 {
     color: #ffc107;
 }
 
+.cdc-tables {
+    color: #888;
+    font-size: 0.8rem;
+}
+
 .stats-container {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

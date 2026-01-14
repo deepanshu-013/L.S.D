@@ -25,6 +25,7 @@
             <div class="status-item">
                 <span class="status-label">CDC Sync:</span>
                 <span id="cdc-status" class="status-badge status-unknown">-</span>
+                <span id="cdc-tables" class="cdc-tables"></span>
             </div>
         </div>
 
@@ -42,8 +43,8 @@
                 <div class="stat-label">Total Records</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value" id="ch-indexed">-</div>
-                <div class="stat-label">ClickHouse Indexed</div>
+                <div class="stat-value" id="total-columns">-</div>
+                <div class="stat-label">Columns</div>
             </div>
         </div>
 
@@ -122,12 +123,12 @@
                     <span>Get single record by primary key</span>
                 </div>
                 <div class="endpoint">
-                    <code>GET /api/tables/{table}/search?q=term&engine=clickhouse</code>
+                    <code>GET /api/tables/{table}/search?q=term&engine=auto</code>
                     <span>Multi-column search (engine: auto/clickhouse/postgresql)</span>
                 </div>
                 <div class="endpoint">
-                    <code>GET /api/tables/{table}/stats</code>
-                    <span>Get table statistics and CDC sync status</span>
+                    <code>GET /api/cdc/status</code>
+                    <span>CDC pipeline status and sync metrics</span>
                 </div>
             </div>
         </div>

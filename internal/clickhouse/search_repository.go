@@ -89,6 +89,10 @@ func (r *SearchRepository) IndexRecord(ctx context.Context, tableName string, id
                 return nil
         }
 
+        if err := r.EnsureSearchIndex(ctx, tableName); err != nil {
+                return fmt.Errorf("failed to ensure search index: %w", err)
+        }
+
         table := r.registry.GetTable(tableName)
         if table == nil {
                 return fmt.Errorf("table not found: %s", tableName)
@@ -121,6 +125,10 @@ func (r *SearchRepository) DeleteRecord(ctx context.Context, tableName string, i
                 return nil
         }
 
+        if err := r.EnsureSearchIndex(ctx, tableName); err != nil {
+                return fmt.Errorf("failed to ensure search index: %w", err)
+        }
+
         indexTableName := fmt.Sprintf("search_%s", tableName)
         insertSQL := fmt.Sprintf(`
                 INSERT INTO %s (id, table_name, search_text, original_data, is_deleted)
@@ -133,6 +141,10 @@ func (r *SearchRepository) DeleteRecord(ctx context.Context, tableName string, i
 func (r *SearchRepository) Search(ctx context.Context, params SearchParams) (*SearchResult, error) {
         if !r.IsAvailable() {
                 return nil, fmt.Errorf("clickhouse not available")
+        }
+
+        if err := r.EnsureSearchIndex(ctx, params.TableName); err != nil {
+                return nil, fmt.Errorf("failed to ensure search index: %w", err)
         }
 
         limit := params.Limit

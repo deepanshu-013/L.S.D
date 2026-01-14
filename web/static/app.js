@@ -6,6 +6,7 @@ let isSearchMode = false;
 let currentSearchTerm = '';
 let tableSchema = null;
 let searchableColumns = [];
+let clickhouseAvailable = false;
 
 async function loadTables() {
     try {
@@ -24,16 +25,37 @@ async function loadTables() {
             select.appendChild(option);
         }
 
-        const healthResponse = await fetch('/api/health');
-        const health = await healthResponse.json();
-        
-        const clickhouseStatus = document.getElementById('clickhouse-status');
-        if (clickhouseStatus) {
-            clickhouseStatus.textContent = health.clickhouse ? 'Connected' : 'Not Available';
-            clickhouseStatus.className = health.clickhouse ? 'status-ok' : 'status-off';
-        }
+        await loadHealthStatus();
     } catch (error) {
         console.error('Error loading tables:', error);
+    }
+}
+
+async function loadHealthStatus() {
+    try {
+        const response = await fetch('/api/health');
+        const health = await response.json();
+        
+        clickhouseAvailable = health.clickhouse;
+        
+        const redisStatus = document.getElementById('redis-status');
+        redisStatus.textContent = health.redis ? 'Connected' : 'Not Available';
+        redisStatus.className = 'status-badge ' + (health.redis ? 'status-ok' : 'status-off');
+        
+        const chStatus = document.getElementById('clickhouse-status');
+        chStatus.textContent = health.clickhouse ? 'Connected' : 'Not Available';
+        chStatus.className = 'status-badge ' + (health.clickhouse ? 'status-ok' : 'status-off');
+        
+        const cdcStatus = document.getElementById('cdc-status');
+        if (health.clickhouse) {
+            cdcStatus.textContent = 'Running';
+            cdcStatus.className = 'status-badge status-ok';
+        } else {
+            cdcStatus.textContent = 'Disabled';
+            cdcStatus.className = 'status-badge status-off';
+        }
+    } catch (error) {
+        console.error('Error loading health status:', error);
     }
 }
 
@@ -44,7 +66,7 @@ async function selectTable() {
     if (!currentTable) {
         document.getElementById('current-table').textContent = '-';
         document.getElementById('total-records').textContent = '-';
-        document.getElementById('total-columns').textContent = '-';
+        document.getElementById('ch-indexed').textContent = '-';
         return;
     }
     
@@ -65,8 +87,6 @@ async function loadTableSchema() {
         const response = await fetch(`/api/tables/${currentTable}/schema`);
         tableSchema = await response.json();
         
-        document.getElementById('total-columns').textContent = tableSchema.columns.length;
-        
         searchableColumns = tableSchema.searchable || [];
         
         const sortSelect = document.getElementById('sort-by');
@@ -76,45 +96,6 @@ async function loadTableSchema() {
             option.value = col;
             option.textContent = col;
             sortSelect.appendChild(option);
-        }
-        
-        const filtersRow = document.getElementById('filters-row');
-        filtersRow.innerHTML = '';
-        for (const col of tableSchema.filterable || []) {
-            const filterDiv = document.createElement('div');
-            filterDiv.className = 'filter-item';
-            filterDiv.innerHTML = `
-                <label>${col}:</label>
-                <input type="text" id="filter-${col}" placeholder="Filter by ${col}" onchange="loadRecords()">
-            `;
-            filtersRow.appendChild(filterDiv);
-        }
-
-        const searchColumnsDiv = document.getElementById('search-columns');
-        if (searchColumnsDiv) {
-            searchColumnsDiv.innerHTML = '';
-            if (searchableColumns.length > 0) {
-                const label = document.createElement('span');
-                label.className = 'search-columns-label';
-                label.textContent = 'Search in: ';
-                searchColumnsDiv.appendChild(label);
-                
-                for (const col of searchableColumns.slice(0, 5)) {
-                    const checkbox = document.createElement('label');
-                    checkbox.className = 'search-column-checkbox';
-                    checkbox.innerHTML = `
-                        <input type="checkbox" value="${col}" checked> ${col}
-                    `;
-                    searchColumnsDiv.appendChild(checkbox);
-                }
-                
-                if (searchableColumns.length > 5) {
-                    const more = document.createElement('span');
-                    more.className = 'search-more';
-                    more.textContent = `+${searchableColumns.length - 5} more`;
-                    searchColumnsDiv.appendChild(more);
-                }
-            }
         }
         
         const thead = document.getElementById('table-head');
@@ -135,6 +116,13 @@ async function loadTableStats() {
         const count = stats.estimated_count || stats.total_count || 0;
         const countType = stats.count_type === 'estimated' ? '~' : '';
         document.getElementById('total-records').textContent = countType + formatNumber(count);
+        
+        const chIndexed = document.getElementById('ch-indexed');
+        if (stats.clickhouse_indexed !== undefined) {
+            chIndexed.textContent = formatNumber(stats.clickhouse_indexed);
+        } else {
+            chIndexed.textContent = '-';
+        }
     } catch (error) {
         console.error('Error loading stats:', error);
     }
@@ -153,15 +141,6 @@ async function loadRecords(cursor = '') {
     if (sortBy) url += `&sort_by=${sortBy}`;
     if (sortDir) url += `&sort_dir=${sortDir}`;
     if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-    
-    if (tableSchema && tableSchema.filterable) {
-        for (const col of tableSchema.filterable) {
-            const filterInput = document.getElementById(`filter-${col}`);
-            if (filterInput && filterInput.value) {
-                url += `&${col}=${encodeURIComponent(filterInput.value)}`;
-            }
-        }
-    }
     
     try {
         const response = await fetch(url);
@@ -196,13 +175,25 @@ async function searchRecords() {
     await performSearch(term, '');
 }
 
+function getSelectedEngine() {
+    const radios = document.querySelectorAll('input[name="search-engine"]');
+    for (const radio of radios) {
+        if (radio.checked) {
+            return radio.value;
+        }
+    }
+    return 'auto';
+}
+
 async function performSearch(term, cursor) {
     let url = `/api/tables/${currentTable}/search?q=${encodeURIComponent(term)}&limit=20`;
     if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
     
-    const selectedColumns = getSelectedSearchColumns();
-    if (selectedColumns.length > 0) {
-        url += `&columns=${encodeURIComponent(selectedColumns.join(','))}`;
+    const engine = getSelectedEngine();
+    if (engine === 'postgresql') {
+        url += '&engine=postgresql';
+    } else if (engine === 'clickhouse' && clickhouseAvailable) {
+        url += '&engine=clickhouse';
     }
     
     try {
@@ -214,17 +205,12 @@ async function performSearch(term, cursor) {
         
         const searchInfo = document.getElementById('search-info');
         if (searchInfo && data.search_engine) {
-            searchInfo.textContent = `Searched via ${data.search_engine}`;
-            searchInfo.className = data.search_engine === 'clickhouse' ? 'search-fast' : 'search-pg';
+            searchInfo.textContent = `Searched via ${data.search_engine.toUpperCase()}`;
+            searchInfo.className = data.search_engine === 'clickhouse' ? 'search-info search-fast' : 'search-info search-pg';
         }
     } catch (error) {
         console.error('Error searching records:', error);
     }
-}
-
-function getSelectedSearchColumns() {
-    const checkboxes = document.querySelectorAll('#search-columns input[type="checkbox"]:checked');
-    return Array.from(checkboxes).map(cb => cb.value);
 }
 
 function renderRecords(data) {

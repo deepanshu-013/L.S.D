@@ -19,7 +19,7 @@ body {
 
 header {
     text-align: center;
-    margin-bottom: 2rem;
+    margin-bottom: 1.5rem;
 }
 
 header h1 {
@@ -33,9 +33,54 @@ header h1 {
     font-size: 1rem;
 }
 
+.status-panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.status-label {
+    color: #888;
+    font-size: 0.9rem;
+}
+
+.status-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.status-ok {
+    background: rgba(0, 200, 83, 0.2);
+    color: #00c853;
+}
+
+.status-off {
+    background: rgba(255, 82, 82, 0.2);
+    color: #ff5252;
+}
+
+.status-unknown {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+}
+
 .stats-container {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 1.5rem;
     margin-bottom: 2rem;
 }
@@ -134,32 +179,57 @@ header h1 {
     background: #00b8d9;
 }
 
-.filters-row {
+.search-options {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
     gap: 1rem;
     margin-bottom: 1rem;
+    padding: 0.75rem 1rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
 }
 
-.filter-item {
+.engine-selector {
     display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
+    align-items: center;
+    gap: 1rem;
 }
 
-.filter-item label {
+.engine-label {
     color: #888;
-    font-size: 0.8rem;
+    font-size: 0.9rem;
 }
 
-.filter-item input {
-    padding: 0.5rem 0.75rem;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.05);
-    color: #fff;
+.engine-option {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: #e0e0e0;
     font-size: 0.9rem;
-    min-width: 150px;
+    cursor: pointer;
+}
+
+.engine-option input {
+    cursor: pointer;
+    accent-color: #00d9ff;
+}
+
+.search-info {
+    color: #888;
+    font-size: 0.85rem;
+}
+
+.search-fast {
+    color: #00d9ff;
+    font-weight: 600;
+}
+
+.search-pg {
+    color: #ffa500;
+    font-weight: 600;
 }
 
 .sort-controls {
@@ -262,88 +332,10 @@ tr:hover {
     padding: 1.5rem;
 }
 
-.api-info h2,
-.setup-info h2 {
+.api-info h2 {
     color: #00d9ff;
     margin-bottom: 1rem;
     font-size: 1.25rem;
-}
-
-.search-options {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 1rem;
-    margin-bottom: 1rem;
-}
-
-.search-columns-container {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-.search-columns-label {
-    color: #888;
-    font-size: 0.85rem;
-}
-
-.search-column-checkbox {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    color: #e0e0e0;
-    font-size: 0.85rem;
-    cursor: pointer;
-}
-
-.search-column-checkbox input {
-    cursor: pointer;
-}
-
-.search-more {
-    color: #666;
-    font-size: 0.8rem;
-}
-
-.search-info {
-    color: #888;
-    font-size: 0.85rem;
-    margin-left: auto;
-}
-
-.search-fast {
-    color: #00d9ff;
-}
-
-.search-pg {
-    color: #ffa500;
-}
-
-.setup-info {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin-top: 1.5rem;
-}
-
-.setup-steps p {
-    color: #888;
-    margin-bottom: 0.75rem;
-}
-
-.setup-steps pre {
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    padding: 1rem;
-    color: #00d9ff;
-    font-family: 'Fira Code', monospace;
-    font-size: 0.85rem;
-    overflow-x: auto;
-    margin-bottom: 0.75rem;
 }
 
 .endpoint-list {
@@ -367,7 +359,7 @@ tr:hover {
     border-radius: 4px;
     font-family: 'Fira Code', monospace;
     font-size: 0.85rem;
-    min-width: 280px;
+    min-width: 320px;
 }
 
 .endpoint span {
@@ -399,5 +391,15 @@ tr:hover {
     
     .table-selector select {
         min-width: 100%;
+    }
+    
+    .status-panel {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .engine-selector {
+        flex-direction: column;
+        align-items: flex-start;
     }
 }

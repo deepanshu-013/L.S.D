@@ -3,29 +3,34 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"highperf-api/internal/cache"
+	chpkg "highperf-api/internal/clickhouse"
 	"highperf-api/internal/database"
 	"highperf-api/internal/schema"
 )
 
 type DynamicHandler struct {
-	repo        *database.DynamicRepository
-	registry    *schema.SchemaRegistry
-	cache       *cache.RedisCache
-	maxPageSize int
-	defaultSize int
-	timeout     time.Duration
+	repo         *database.DynamicRepository
+	registry     *schema.SchemaRegistry
+	cache        *cache.RedisCache
+	chSearch     *chpkg.SearchRepository
+	maxPageSize  int
+	defaultSize  int
+	timeout      time.Duration
 }
 
-func NewDynamicHandler(repo *database.DynamicRepository, registry *schema.SchemaRegistry, cache *cache.RedisCache, maxPageSize, defaultSize int, timeout time.Duration) *DynamicHandler {
+func NewDynamicHandler(repo *database.DynamicRepository, registry *schema.SchemaRegistry, cache *cache.RedisCache, chSearch *chpkg.SearchRepository, maxPageSize, defaultSize int, timeout time.Duration) *DynamicHandler {
 	return &DynamicHandler{
 		repo:        repo,
 		registry:    registry,
 		cache:       cache,
+		chSearch:    chSearch,
 		maxPageSize: maxPageSize,
 		defaultSize: defaultSize,
 		timeout:     timeout,
@@ -35,15 +40,20 @@ func NewDynamicHandler(repo *database.DynamicRepository, registry *schema.Schema
 func (h *DynamicHandler) ListTables(w http.ResponseWriter, r *http.Request) {
 	tables := h.registry.GetAllTables()
 
+	clickhouseAvailable := h.chSearch != nil && h.chSearch.IsAvailable()
+
 	tableList := make([]map[string]interface{}, 0, len(tables))
 	for _, t := range tables {
+		searchableColumns := h.getSearchableColumns(t.Name)
 		tableList = append(tableList, map[string]interface{}{
-			"name":         t.Name,
-			"schema":       t.Schema,
-			"columns":      len(t.Columns),
-			"primary_key":  t.PrimaryKey,
-			"sortable":     h.registry.GetSortableColumns(t.Name),
-			"filterable":   h.registry.GetFilterableColumns(t.Name),
+			"name":              t.Name,
+			"schema":            t.Schema,
+			"columns":           len(t.Columns),
+			"primary_key":       t.PrimaryKey,
+			"sortable":          h.registry.GetSortableColumns(t.Name),
+			"filterable":        h.registry.GetFilterableColumns(t.Name),
+			"searchable":        searchableColumns,
+			"clickhouse_search": clickhouseAvailable,
 		})
 	}
 
@@ -66,14 +76,19 @@ func (h *DynamicHandler) GetTableSchema(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	searchableColumns := h.getSearchableColumns(tableName)
+	clickhouseAvailable := h.chSearch != nil && h.chSearch.IsAvailable()
+
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"name":        table.Name,
-		"schema":      table.Schema,
-		"columns":     table.Columns,
-		"primary_key": table.PrimaryKey,
-		"indexes":     table.Indexes,
-		"sortable":    h.registry.GetSortableColumns(tableName),
-		"filterable":  h.registry.GetFilterableColumns(tableName),
+		"name":              table.Name,
+		"schema":            table.Schema,
+		"columns":           table.Columns,
+		"primary_key":       table.PrimaryKey,
+		"indexes":           table.Indexes,
+		"sortable":          h.registry.GetSortableColumns(tableName),
+		"filterable":        h.registry.GetFilterableColumns(tableName),
+		"searchable":        searchableColumns,
+		"clickhouse_search": clickhouseAvailable,
 	})
 }
 
@@ -174,7 +189,7 @@ func (h *DynamicHandler) SearchRecords(w http.ResponseWriter, r *http.Request) {
 	}
 
 	searchTerm := r.URL.Query().Get("q")
-	searchColumn := r.URL.Query().Get("column")
+	searchColumnsParam := r.URL.Query().Get("columns")
 
 	if searchTerm == "" {
 		h.writeError(w, http.StatusBadRequest, "Search term (q) is required")
@@ -186,18 +201,18 @@ func (h *DynamicHandler) SearchRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	table := h.registry.GetTable(tableName)
-	if searchColumn == "" {
-		for _, col := range table.Columns {
-			if col.DataType == "character varying" || col.DataType == "text" {
-				searchColumn = col.Name
-				break
-			}
+	var searchColumns []string
+	if searchColumnsParam != "" {
+		searchColumns = strings.Split(searchColumnsParam, ",")
+		for i := range searchColumns {
+			searchColumns[i] = strings.TrimSpace(searchColumns[i])
 		}
+	} else {
+		searchColumns = h.getSearchableColumns(tableName)
 	}
 
-	if searchColumn == "" {
-		h.writeError(w, http.StatusBadRequest, "No searchable text column found")
+	if len(searchColumns) == 0 {
+		h.writeError(w, http.StatusBadRequest, "No searchable text columns found")
 		return
 	}
 
@@ -206,20 +221,55 @@ func (h *DynamicHandler) SearchRecords(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	result, err := h.repo.SearchRecords(ctx, params, searchColumn, searchTerm)
+	if h.chSearch != nil && h.chSearch.IsAvailable() {
+		chParams := chpkg.SearchParams{
+			TableName:     tableName,
+			SearchTerm:    searchTerm,
+			SearchColumns: searchColumns,
+			Cursor:        params.Cursor,
+			Limit:         params.Limit,
+			Filters:       params.Filters,
+		}
+
+		result, err := h.chSearch.MultiColumnSearch(ctx, chParams)
+		if err == nil && result != nil {
+			h.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"data":           result.Data,
+				"next_cursor":    result.NextCursor,
+				"has_more":       result.HasMore,
+				"count":          result.Count,
+				"table":          tableName,
+				"search_columns": searchColumns,
+				"search_engine":  "clickhouse",
+			})
+			return
+		}
+		log.Printf("ClickHouse search failed, falling back to PostgreSQL: %v", err)
+	}
+
+	result, err := h.multiColumnPostgresSearch(ctx, tableName, searchTerm, searchColumns, params)
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, "Failed to search records")
+		h.writeError(w, http.StatusInternalServerError, "Failed to search records: "+err.Error())
 		return
 	}
 
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"data":          result.Data,
-		"next_cursor":   result.NextCursor,
-		"has_more":      result.HasMore,
-		"count":         result.Count,
-		"table":         tableName,
-		"search_column": searchColumn,
+		"data":           result.Data,
+		"next_cursor":    result.NextCursor,
+		"has_more":       result.HasMore,
+		"count":          result.Count,
+		"table":          tableName,
+		"search_columns": searchColumns,
+		"search_engine":  "postgresql",
 	})
+}
+
+func (h *DynamicHandler) multiColumnPostgresSearch(ctx context.Context, tableName, searchTerm string, searchColumns []string, params schema.QueryParams) (*database.DynamicResult, error) {
+	if len(searchColumns) == 1 {
+		return h.repo.SearchRecords(ctx, params, searchColumns[0], searchTerm)
+	}
+
+	return h.repo.MultiColumnSearch(ctx, params, searchColumns, searchTerm)
 }
 
 func (h *DynamicHandler) GetTableStats(w http.ResponseWriter, r *http.Request) {
@@ -237,10 +287,18 @@ func (h *DynamicHandler) GetTableStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	stats, err := h.repo.GetTableStats(ctx, tableName)
+	stats, err := h.repo.GetTableStatsEstimated(ctx, tableName)
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, "Failed to fetch stats")
+		h.writeError(w, http.StatusInternalServerError, "Failed to fetch stats: "+err.Error())
 		return
+	}
+
+	if h.chSearch != nil && h.chSearch.IsAvailable() {
+		syncStats, err := h.chSearch.GetSyncStats(ctx, tableName)
+		if err == nil && syncStats != nil {
+			stats["clickhouse_indexed"] = syncStats.RecordCount
+			stats["clickhouse_last_sync"] = syncStats.LastSyncAt
+		}
 	}
 
 	h.writeJSON(w, http.StatusOK, stats)
@@ -248,11 +306,34 @@ func (h *DynamicHandler) GetTableStats(w http.ResponseWriter, r *http.Request) {
 
 func (h *DynamicHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	tables := h.registry.GetAllTables()
+
+	clickhouseAvailable := false
+	if h.chSearch != nil {
+		clickhouseAvailable = h.chSearch.IsAvailable()
+	}
+
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":       "healthy",
 		"service":      "dynamic-api",
 		"tables_count": len(tables),
+		"clickhouse":   clickhouseAvailable,
+		"redis":        h.cache.IsAvailable(),
 	})
+}
+
+func (h *DynamicHandler) getSearchableColumns(tableName string) []string {
+	table := h.registry.GetTable(tableName)
+	if table == nil {
+		return nil
+	}
+
+	var textColumns []string
+	for _, col := range table.Columns {
+		if col.DataType == "character varying" || col.DataType == "text" {
+			textColumns = append(textColumns, col.Name)
+		}
+	}
+	return textColumns
 }
 
 func (h *DynamicHandler) parseQueryParams(r *http.Request, tableName string) schema.QueryParams {

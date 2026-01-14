@@ -10,7 +10,7 @@
     <div class="container">
         <header>
             <h1>Dynamic API Dashboard</h1>
-            <p class="subtitle">Auto-discovered PostgreSQL Schema | Keyset Pagination | Go Backend</p>
+            <p class="subtitle">Auto-discovered PostgreSQL Schema | Keyset Pagination | ClickHouse Search</p>
         </header>
 
         <div class="stats-container" id="stats">
@@ -40,9 +40,14 @@
                 </select>
             </div>
             <div class="search-box">
-                <input type="text" id="search-input" placeholder="Search records...">
+                <input type="text" id="search-input" placeholder="Search across all text columns...">
                 <button onclick="searchRecords()">Search</button>
             </div>
+        </div>
+
+        <div class="search-options">
+            <div id="search-columns" class="search-columns-container"></div>
+            <span id="search-info" class="search-info"></span>
         </div>
 
         <div class="filters-row" id="filters-row">
@@ -94,13 +99,29 @@
                     <span>Get single record by primary key</span>
                 </div>
                 <div class="endpoint">
-                    <code>GET /api/tables/{table}/search?q=term</code>
-                    <span>Search records</span>
+                    <code>GET /api/tables/{table}/search?q=term&columns=col1,col2</code>
+                    <span>Multi-column search (ClickHouse accelerated)</span>
                 </div>
                 <div class="endpoint">
                     <code>GET /api/tables/{table}/stats</code>
-                    <span>Get table statistics</span>
+                    <span>Get table statistics (estimated count)</span>
                 </div>
+            </div>
+        </div>
+
+        <div class="setup-info">
+            <h2>ClickHouse Setup (for 2TB+ databases)</h2>
+            <div class="setup-steps">
+                <p>To enable ClickHouse-accelerated search, set these environment variables:</p>
+                <pre>
+CLICKHOUSE_ADDR=localhost:9000
+CLICKHOUSE_DATABASE=default
+CLICKHOUSE_USERNAME=default
+CLICKHOUSE_PASSWORD=your_password
+CLICKHOUSE_SYNC_TABLES=table1,table2,table3
+CDC_SYNC_INTERVAL_SECONDS=30
+CDC_BATCH_SIZE=1000</pre>
+                <p>The API will automatically sync data from PostgreSQL to ClickHouse and use it for fast multi-column text searches.</p>
             </div>
         </div>
     </div>

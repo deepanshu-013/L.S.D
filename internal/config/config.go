@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,9 +19,26 @@ type Config struct {
 	QueryTimeout    time.Duration
 	RateLimitRPS    int
 	SessionSecret   string
+
+	ClickHouseAddr     string
+	ClickHouseDatabase string
+	ClickHouseUsername string
+	ClickHousePassword string
+	ClickHouseTables   []string
+	CDCSyncInterval    time.Duration
+	CDCBatchSize       int
 }
 
 func Load() *Config {
+	tablesStr := getEnv("CLICKHOUSE_SYNC_TABLES", "")
+	var tables []string
+	if tablesStr != "" {
+		tables = strings.Split(tablesStr, ",")
+		for i := range tables {
+			tables[i] = strings.TrimSpace(tables[i])
+		}
+	}
+
 	return &Config{
 		DatabaseURL:     getEnv("DATABASE_URL", ""),
 		RedisAddr:       getEnv("REDIS_ADDR", "localhost:6379"),
@@ -33,6 +51,14 @@ func Load() *Config {
 		QueryTimeout:    time.Duration(getEnvInt("QUERY_TIMEOUT_SECONDS", 10)) * time.Second,
 		RateLimitRPS:    getEnvInt("RATE_LIMIT_RPS", 100),
 		SessionSecret:   getEnv("SESSION_SECRET", ""),
+
+		ClickHouseAddr:     getEnv("CLICKHOUSE_ADDR", ""),
+		ClickHouseDatabase: getEnv("CLICKHOUSE_DATABASE", "default"),
+		ClickHouseUsername: getEnv("CLICKHOUSE_USERNAME", "default"),
+		ClickHousePassword: getEnv("CLICKHOUSE_PASSWORD", ""),
+		ClickHouseTables:   tables,
+		CDCSyncInterval:    time.Duration(getEnvInt("CDC_SYNC_INTERVAL_SECONDS", 30)) * time.Second,
+		CDCBatchSize:       getEnvInt("CDC_BATCH_SIZE", 1000),
 	}
 }
 

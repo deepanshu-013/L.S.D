@@ -27,7 +27,8 @@ func (s *RecordService) GetRecords(ctx context.Context, params models.QueryParam
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	cacheKey := s.cache.GenerateCacheKey("records", params.Filters, params.Cursor, params.Limit)
+	// ✅ FIXED: Added sortBy and sortDir parameters (empty strings as defaults)
+	cacheKey := s.cache.GenerateCacheKey("records", params.Filters, params.Cursor, params.Limit, "", "")
 
 	var cachedResponse models.PaginatedResponse
 	if hit, _ := s.cache.Get(ctx, cacheKey, &cachedResponse); hit {
@@ -63,7 +64,8 @@ func (s *RecordService) SearchRecords(ctx context.Context, searchTerm string, pa
 	defer cancel()
 
 	filters := map[string]string{"search": searchTerm}
-	cacheKey := s.cache.GenerateCacheKey("search", filters, params.Cursor, params.Limit)
+	// ✅ FIXED: Added sortBy and sortDir parameters (empty strings as defaults)
+	cacheKey := s.cache.GenerateCacheKey("search", filters, params.Cursor, params.Limit, "", "")
 
 	var cachedResponse models.PaginatedResponse
 	if hit, _ := s.cache.Get(ctx, cacheKey, &cachedResponse); hit {
@@ -91,7 +93,8 @@ func (s *RecordService) GetStats(ctx context.Context) (map[string]interface{}, e
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	cacheKey := s.cache.GenerateCacheKey("stats", nil, "", 0)
+	// ✅ FIXED: Added sortBy and sortDir parameters (empty strings as defaults)
+	cacheKey := s.cache.GenerateCacheKey("stats", nil, "", 0, "", "")
 
 	var cachedStats map[string]interface{}
 	if hit, _ := s.cache.Get(ctx, cacheKey, &cachedStats); hit {

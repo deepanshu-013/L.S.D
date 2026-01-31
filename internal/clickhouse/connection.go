@@ -34,12 +34,19 @@ func NewConnection(cfg Config) (*Connection, error) {
 			Password: cfg.Password,
 		},
 		Settings: clickhouse.Settings{
-			"max_execution_time": 60,
+			"max_execution_time":                         60,
+			"max_memory_usage":                           10000000000, // 10GB
+			"max_threads":                                16,
+			"use_uncompressed_cache":                     1,
+			"allow_experimental_projection_optimization": 1,
 		},
 		DialTimeout:     5 * time.Second,
-		MaxOpenConns:    10,
-		MaxIdleConns:    5,
+		MaxOpenConns:    20,
+		MaxIdleConns:    10,
 		ConnMaxLifetime: time.Hour,
+		Compression: &clickhouse.Compression{
+			Method: clickhouse.CompressionLZ4,
+		},
 	})
 	if err != nil {
 		return &Connection{available: false}, nil
@@ -47,7 +54,6 @@ func NewConnection(cfg Config) (*Connection, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	if err := conn.Ping(ctx); err != nil {
 		return &Connection{available: false}, nil
 	}
@@ -64,6 +70,20 @@ func (c *Connection) Query(ctx context.Context, query string, args ...interface{
 		return nil, fmt.Errorf("clickhouse not available")
 	}
 	return c.conn.Query(ctx, query, args...)
+}
+
+func (c *Connection) QueryRow(ctx context.Context, query string, args ...interface{}) driver.Row {
+	if !c.available {
+		return nil
+	}
+	return c.conn.QueryRow(ctx, query, args...)
+}
+
+func (c *Connection) PrepareBatch(ctx context.Context, query string, opts ...driver.PrepareBatchOption) (driver.Batch, error) {
+	if !c.available {
+		return nil, fmt.Errorf("clickhouse not available")
+	}
+	return c.conn.PrepareBatch(ctx, query, opts...)
 }
 
 func (c *Connection) Exec(ctx context.Context, query string, args ...interface{}) error {

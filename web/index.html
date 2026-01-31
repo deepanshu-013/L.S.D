@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API Documentation</title>
+    <style>
+        body { margin: 0; padding: 0; }
+        
+        .api-reference-toolbar > div > div:nth-child(2),
+        .api-reference-toolbar button[aria-label*="Share"],
+        .api-reference-toolbar button[aria-label*="Generate"] {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <script 
+        id="api-reference"
+        data-url="/swagger.yaml"
+        data-configuration='{"theme":"mars"}'>
+    </script>
+    
+    <script src="/assets/scalar-standalone.js"></script>
+    
+    <script>
+        var removalInterval = setInterval(function() {
+            document.querySelectorAll('button, a').forEach(function(el) {
+                var text = (el.textContent || '').trim();
+                if (text.includes('Generate') || text.includes('SDK') || 
+                    text.includes('Share') || text.includes('Deploy')) {
+                    el.style.display = 'none';
+                    el.remove();
+                }
+            });
+        }, 200);
+        
+        setTimeout(function() {
+            clearInterval(removalInterval);
+            console.log('✅ Cleanup complete');
+        }, 10000);
+    </script>
+</body>
+</html>

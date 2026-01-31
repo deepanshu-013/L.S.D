@@ -2,23 +2,19 @@ package cache
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
 type RedisCache struct {
-	client *redis.Client
-	ttl    time.Duration
+	client  *redis.Client
+	timeout time.Duration
 }
 
-func NewRedisCache(addr, password string, db int, ttl time.Duration) (*RedisCache, error) {
+func NewRedisCache(addr, password string, db int, timeout time.Duration) *RedisCache {
 	client := redis.NewClient(&redis.Options{
 		Addr:         addr,
 		Password:     password,
@@ -27,36 +23,17 @@ func NewRedisCache(addr, password string, db int, ttl time.Duration) (*RedisCach
 		ReadTimeout:  3 * time.Second,
 		WriteTimeout: 3 * time.Second,
 		PoolSize:     10,
-		MinIdleConns: 5,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
-		return &RedisCache{client: nil, ttl: ttl}, nil
+		fmt.Printf("Redis connection failed: %v\n", err)
+		return &RedisCache{client: nil, timeout: timeout}
 	}
 
-	return &RedisCache{client: client, ttl: ttl}, nil
-}
-
-func (c *RedisCache) GenerateCacheKey(endpoint string, filters map[string]string, cursor string, limit int) string {
-	var filterParts []string
-	keys := make([]string, 0, len(filters))
-	for k := range filters {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		if filters[k] != "" {
-			filterParts = append(filterParts, fmt.Sprintf("%s=%s", k, filters[k]))
-		}
-	}
-
-	keyData := fmt.Sprintf("%s|%s|%s|%d", endpoint, strings.Join(filterParts, "&"), cursor, limit)
-	hash := sha256.Sum256([]byte(keyData))
-	return fmt.Sprintf("api:%s:%s", endpoint, hex.EncodeToString(hash[:8]))
+	return &RedisCache{client: client, timeout: timeout}
 }
 
 func (c *RedisCache) Get(ctx context.Context, key string, dest interface{}) (bool, error) {
@@ -64,53 +41,66 @@ func (c *RedisCache) Get(ctx context.Context, key string, dest interface{}) (boo
 		return false, nil
 	}
 
-	data, err := c.client.Get(ctx, key).Bytes()
-	if err != nil {
-		if err == redis.Nil {
-			return false, nil
-		}
+	val, err := c.client.Get(ctx, key).Result()
+	if err == redis.Nil {
 		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
 
-	if err := json.Unmarshal(data, dest); err != nil {
-		return false, nil
+	if err := json.Unmarshal([]byte(val), dest); err != nil {
+		return false, err
 	}
 
 	return true, nil
 }
 
-func (c *RedisCache) Set(ctx context.Context, key string, value interface{}) error {
+// Fixed signature - single TTL parameter, not variadic
+func (c *RedisCache) Set(ctx context.Context, key string, value interface{}, ttl ...time.Duration) error {
 	if c.client == nil {
 		return nil
 	}
 
 	data, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("failed to marshal value: %w", err)
+		return err
 	}
 
-	return c.client.Set(ctx, key, data, c.ttl).Err()
+	expiration := c.timeout
+	if len(ttl) > 0 {
+		expiration = ttl[0]
+	}
+
+	return c.client.Set(ctx, key, data, expiration).Err()
 }
 
-func (c *RedisCache) Delete(ctx context.Context, pattern string) error {
+func (c *RedisCache) Delete(ctx context.Context, key string) error {
 	if c.client == nil {
 		return nil
 	}
-
-	iter := c.client.Scan(ctx, 0, pattern, 100).Iterator()
-	for iter.Next(ctx) {
-		c.client.Del(ctx, iter.Val())
-	}
-	return iter.Err()
-}
-
-func (c *RedisCache) Close() error {
-	if c.client == nil {
-		return nil
-	}
-	return c.client.Close()
+	return c.client.Del(ctx, key).Err()
 }
 
 func (c *RedisCache) IsAvailable() bool {
-	return c.client != nil
+	if c.client == nil {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	return c.client.Ping(ctx).Err() == nil
+}
+
+func (c *RedisCache) GenerateCacheKey(tableName string, filters map[string]string, cursor string, limit int, sortBy string, sortDir string) string {
+	data, _ := json.Marshal(map[string]interface{}{
+		"table":    tableName,
+		"filters":  filters,
+		"cursor":   cursor,
+		"limit":    limit,
+		"sort_by":  sortBy,  // ✅ ADD THIS
+		"sort_dir": sortDir, // ✅ ADD THIS
+	})
+	return fmt.Sprintf("cache:%s:%s", tableName, string(data))
 }

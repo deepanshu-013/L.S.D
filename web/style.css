@@ -376,35 +376,72 @@ tr:hover {
     .container {
         padding: 1rem;
     }
-    
+
     header h1 {
         font-size: 1.75rem;
     }
-    
+
     .controls {
         flex-direction: column;
     }
-    
+
     .search-box {
         min-width: 100%;
     }
-    
+
     .endpoint {
         flex-direction: column;
         align-items: flex-start;
     }
-    
+
     .table-selector select {
         min-width: 100%;
     }
-    
+
     .status-panel {
         flex-direction: column;
         align-items: flex-start;
     }
-    
+
     .engine-selector {
         flex-direction: column;
         align-items: flex-start;
     }
 }
+/* Scalar SDK Removal CSS */
+
+/* Hide SDK Generation Button and Related UI */
+[class*="sdk-"]:not([class*="sdks"]),
+[class*="SDK"],
+[class*="Sdk"]:not([class*="Sdks"]),
+[class*="generate-sdk"],
+[class*="GenerateSdk"],
+[class*="generateSdk"],
+[data-testid*="sdk"],
+[data-testid*="SDK"],
+[aria-label*="SDK"],
+[aria-label*="Generate SDK"],
+button[class*="sdk"]:not([class*="sdks"]),
+button[onclick*="sdk"],
+.sdk-button,
+.sdk-menu,
+.sdk-panel,
+.sdk-modal,
+.sdk-generation,
+.generate-sdk-button,
+*[id*="sdk-"]:not([id*="sdks"]),
+[class^="sdk-"],
+[id^="sdk-"] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    position: absolute !important;
+    left: -99999px !important;
+}
+
+/* Clean up empty spaces */
+.scalar-app > *:empty {
+    display: none !important;
+}
+

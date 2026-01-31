@@ -2,218 +2,54 @@ package database
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"strings"
 
 	"highperf-api/internal/schema"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DynamicRepository struct {
-	pool         *Pool
-	registry     *schema.SchemaRegistry
-	queryBuilder *schema.QueryBuilder
+	pool     *pgxpool.Pool
+	registry *schema.SchemaRegistry
 }
 
-func NewDynamicRepository(pool *Pool, registry *schema.SchemaRegistry) *DynamicRepository {
+func NewDynamicRepository(pool *pgxpool.Pool, registry *schema.SchemaRegistry) *DynamicRepository {
 	return &DynamicRepository{
-		pool:         pool,
-		registry:     registry,
-		queryBuilder: schema.NewQueryBuilder(registry),
+		pool:     pool,
+		registry: registry,
 	}
 }
 
 type DynamicResult struct {
-	Data       []map[string]interface{}
-	NextCursor string
-	HasMore    bool
-	Count      int
+	Data       []map[string]interface{} `json:"data"`
+	NextCursor string                   `json:"next_cursor,omitempty"`
+	HasMore    bool                     `json:"has_more"`
+	Count      int                      `json:"count"`
+}
+
+// CursorData represents decoded cursor information
+type CursorData struct {
+	LastRecord map[string]interface{} `json:"last_record"`
+	Offset     int                    `json:"offset"`
 }
 
 func (r *DynamicRepository) GetRecords(ctx context.Context, params schema.QueryParams) (*DynamicResult, error) {
-	builtQuery, err := r.queryBuilder.BuildSelectQuery(params)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := r.pool.Query(ctx, builtQuery.SQL, builtQuery.Args...)
-	if err != nil {
-		return nil, fmt.Errorf("query failed: %w", err)
-	}
-	defer rows.Close()
-
-	var records []map[string]interface{}
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			return nil, fmt.Errorf("values failed: %w", err)
+	// Decode cursor if present
+	var cursorData *CursorData
+	if params.Cursor != "" {
+		decoded, err := base64.URLEncoding.DecodeString(params.Cursor)
+		if err == nil {
+			var cd CursorData
+			if json.Unmarshal(decoded, &cd) == nil {
+				cursorData = &cd
+			}
 		}
-
-		record := make(map[string]interface{})
-		for i, col := range builtQuery.Columns {
-			record[col] = values[i]
-		}
-		records = append(records, record)
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	limit := params.Limit
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-
-	var nextCursor string
-	hasMore := len(records) > limit
-	if hasMore {
-		records = records[:limit]
-		lastRecord := records[len(records)-1]
-		nextCursor = r.queryBuilder.EncodeCursor(params.TableName, lastRecord, builtQuery.SortColumn)
-	}
-
-	return &DynamicResult{
-		Data:       records,
-		NextCursor: nextCursor,
-		HasMore:    hasMore,
-		Count:      len(records),
-	}, nil
-}
-
-func (r *DynamicRepository) GetRecordByPK(ctx context.Context, tableName string, pkValue interface{}) (map[string]interface{}, error) {
-	builtQuery, err := r.queryBuilder.BuildGetByPKQuery(tableName, pkValue)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := r.pool.Query(ctx, builtQuery.SQL, builtQuery.Args...)
-	if err != nil {
-		return nil, fmt.Errorf("query failed: %w", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return nil, nil
-	}
-
-	values, err := rows.Values()
-	if err != nil {
-		return nil, fmt.Errorf("values failed: %w", err)
-	}
-
-	record := make(map[string]interface{})
-	for i, col := range builtQuery.Columns {
-		record[col] = values[i]
-	}
-
-	return record, nil
-}
-
-func (r *DynamicRepository) SearchRecords(ctx context.Context, params schema.QueryParams, searchColumn, searchTerm string) (*DynamicResult, error) {
-	builtQuery, err := r.queryBuilder.BuildSearchQuery(params, searchColumn, searchTerm)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := r.pool.Query(ctx, builtQuery.SQL, builtQuery.Args...)
-	if err != nil {
-		return nil, fmt.Errorf("query failed: %w", err)
-	}
-	defer rows.Close()
-
-	var records []map[string]interface{}
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			return nil, fmt.Errorf("values failed: %w", err)
-		}
-
-		record := make(map[string]interface{})
-		for i, col := range builtQuery.Columns {
-			record[col] = values[i]
-		}
-		records = append(records, record)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	limit := params.Limit
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-
-	var nextCursor string
-	hasMore := len(records) > limit
-	if hasMore {
-		records = records[:limit]
-		lastRecord := records[len(records)-1]
-		nextCursor = r.queryBuilder.EncodeCursor(params.TableName, lastRecord, builtQuery.SortColumn)
-	}
-
-	return &DynamicResult{
-		Data:       records,
-		NextCursor: nextCursor,
-		HasMore:    hasMore,
-		Count:      len(records),
-	}, nil
-}
-
-func (r *DynamicRepository) MultiColumnSearch(ctx context.Context, params schema.QueryParams, searchColumns []string, searchTerm string) (*DynamicResult, error) {
-	table := r.registry.GetTable(params.TableName)
-	if table == nil {
-		return nil, fmt.Errorf("table not found: %s", params.TableName)
-	}
-
-	var columns []string
-	for _, col := range table.Columns {
-		columns = append(columns, col.Name)
-	}
-
-	limit := params.Limit
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-
-	var searchConditions []string
-	var args []interface{}
-	argIndex := 1
-
-	for _, col := range searchColumns {
-		searchConditions = append(searchConditions, fmt.Sprintf("%s ILIKE $%d", col, argIndex))
-		args = append(args, "%"+searchTerm+"%")
-		argIndex++
-	}
-
-	whereClause := "WHERE (" + strings.Join(searchConditions, " OR ") + ")"
-
-	cursor, err := r.queryBuilder.DecodeCursor(params.Cursor)
-	if err != nil {
-		return nil, err
-	}
-
-	if cursor != nil && len(cursor.Values) > 0 {
-		cv := cursor.Values[len(cursor.Values)-1]
-		parsedVal, err := parseValueFromCursor(cv.Value, cv.Type)
-		if err != nil {
-			return nil, err
-		}
-		whereClause += fmt.Sprintf(" AND %s > $%d", cv.Column, argIndex)
-		args = append(args, parsedVal)
-		argIndex++
-	}
-
-	pkOrder := table.PrimaryKey[0]
-
-	query := fmt.Sprintf(`
-		SELECT %s
-		FROM %s
-		%s
-		ORDER BY %s ASC
-		LIMIT $%d
-	`, strings.Join(columns, ", "), params.TableName, whereClause, pkOrder, argIndex)
-	args = append(args, limit+1)
+	query, args := r.buildQuery(params, cursorData, false)
 
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -225,26 +61,41 @@ func (r *DynamicRepository) MultiColumnSearch(ctx context.Context, params schema
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
-			return nil, fmt.Errorf("values failed: %w", err)
+			continue
 		}
 
+		fieldDescriptions := rows.FieldDescriptions()
 		record := make(map[string]interface{})
-		for i, col := range columns {
-			record[col] = values[i]
+		for i, field := range fieldDescriptions {
+			if i < len(values) {
+				record[string(field.Name)] = values[i]
+			}
 		}
 		records = append(records, record)
+
+		if len(records) >= params.Limit+1 {
+			break
+		}
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
+	hasMore := len(records) > params.Limit
+	if hasMore {
+		records = records[:params.Limit]
 	}
 
 	var nextCursor string
-	hasMore := len(records) > limit
-	if hasMore {
-		records = records[:limit]
+	if hasMore && len(records) > 0 {
 		lastRecord := records[len(records)-1]
-		nextCursor = r.queryBuilder.EncodeCursor(params.TableName, lastRecord, pkOrder)
+		newOffset := params.Limit
+		if cursorData != nil {
+			newOffset += cursorData.Offset
+		}
+		cursorData := CursorData{
+			LastRecord: lastRecord,
+			Offset:     newOffset,
+		}
+		cursorJSON, _ := json.Marshal(cursorData)
+		nextCursor = base64.URLEncoding.EncodeToString(cursorJSON)
 	}
 
 	return &DynamicResult{
@@ -255,70 +106,252 @@ func (r *DynamicRepository) MultiColumnSearch(ctx context.Context, params schema
 	}, nil
 }
 
-func parseValueFromCursor(val interface{}, dataType string) (interface{}, error) {
-	return val, nil
+func (r *DynamicRepository) GetRecordByPK(ctx context.Context, tableName string, pk interface{}) (map[string]interface{}, error) {
+	table := r.registry.GetTable(tableName)
+	if table == nil || len(table.PrimaryKey) == 0 {
+		return nil, fmt.Errorf("table not found or no primary key")
+	}
+
+	pkColumn := table.PrimaryKey[0]
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s = $1 LIMIT 1", tableName, pkColumn)
+
+	rows, err := r.pool.Query(ctx, query, pk)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return nil, nil
+	}
+
+	values, err := rows.Values()
+	if err != nil {
+		return nil, err
+	}
+
+	fieldDescriptions := rows.FieldDescriptions()
+	record := make(map[string]interface{})
+	for i, field := range fieldDescriptions {
+		if i < len(values) {
+			record[string(field.Name)] = values[i]
+		}
+	}
+
+	return record, nil
 }
 
-func (r *DynamicRepository) GetTableStats(ctx context.Context, tableName string) (map[string]interface{}, error) {
-	table := r.registry.GetTable(tableName)
-	if table == nil {
-		return nil, fmt.Errorf("table not found: %s", tableName)
-	}
+func (r *DynamicRepository) SearchRecords(ctx context.Context, params schema.QueryParams, searchColumn, searchTerm string) (*DynamicResult, error) {
+	params.Filters[searchColumn] = "%" + searchTerm + "%"
+	return r.GetRecords(ctx, params)
+}
 
-	query := fmt.Sprintf(`
-		SELECT 
-			COUNT(*) as total_count
-		FROM %s
-	`, tableName)
+func (r *DynamicRepository) MultiColumnSearch(ctx context.Context, params schema.QueryParams, searchColumns []string, searchTerm string) (*DynamicResult, error) {
+	query, args := r.buildMultiColumnSearchQuery(params, searchColumns, searchTerm)
 
-	var totalCount int64
-	err := r.pool.QueryRow(ctx, query).Scan(&totalCount)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query failed: %w", err)
+		return nil, fmt.Errorf("multi-column search failed: %w", err)
+	}
+	defer rows.Close()
+
+	var records []map[string]interface{}
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			continue
+		}
+
+		fieldDescriptions := rows.FieldDescriptions()
+		record := make(map[string]interface{})
+		for i, field := range fieldDescriptions {
+			if i < len(values) {
+				record[string(field.Name)] = values[i]
+			}
+		}
+		records = append(records, record)
+
+		if len(records) >= params.Limit+1 {
+			break
+		}
 	}
 
-	return map[string]interface{}{
-		"table_name":   tableName,
-		"total_count":  totalCount,
-		"column_count": len(table.Columns),
-		"columns":      table.Columns,
-		"primary_key":  table.PrimaryKey,
-		"indexes":      table.Indexes,
+	hasMore := len(records) > params.Limit
+	if hasMore {
+		records = records[:params.Limit]
+	}
+
+	return &DynamicResult{
+		Data:    records,
+		HasMore: hasMore,
+		Count:   len(records),
 	}, nil
 }
 
 func (r *DynamicRepository) GetTableStatsEstimated(ctx context.Context, tableName string) (map[string]interface{}, error) {
-	table := r.registry.GetTable(tableName)
-	if table == nil {
-		return nil, fmt.Errorf("table not found: %s", tableName)
-	}
-
 	query := `
-		SELECT reltuples::bigint as estimated_count
-		FROM pg_class c
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE c.relname = $1
-		AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-		LIMIT 1
-	`
+        SELECT 
+            schemaname,
+            relname,
+            n_live_tup as estimated_rows
+        FROM pg_stat_user_tables
+        WHERE relname = $1
+    `
 
-	var estimatedCount int64
-	err := r.pool.QueryRow(ctx, query, tableName).Scan(&estimatedCount)
+	var schema, name string
+	var estimatedRows int64
+
+	err := r.pool.QueryRow(ctx, query, tableName).Scan(&schema, &name, &estimatedRows)
 	if err != nil {
-		return r.GetTableStats(ctx, tableName)
-	}
-
-	if estimatedCount < 0 {
-		estimatedCount = 0
+		return nil, err
 	}
 
 	return map[string]interface{}{
-		"table_name":      tableName,
-		"estimated_count": estimatedCount,
-		"count_type":      "estimated",
-		"column_count":    len(table.Columns),
-		"columns":         table.Columns,
-		"primary_key":     table.PrimaryKey,
-		"indexes":         table.Indexes,
+		"table":          name,
+		"schema":         schema,
+		"estimated_rows": estimatedRows,
 	}, nil
+}
+
+func (r *DynamicRepository) buildQuery(params schema.QueryParams, cursorData *CursorData, countOnly bool) (string, []interface{}) {
+	var args []interface{}
+	argPos := 1
+	selectClause := "*"
+	if countOnly {
+		selectClause = "COUNT(*)"
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s WHERE 1=1", selectClause, params.TableName)
+
+	// Apply filters
+	for col, val := range params.Filters {
+		query += fmt.Sprintf(" AND %s = $%d", col, argPos)
+		args = append(args, val)
+		argPos++
+	}
+
+	// ✅ FIXED: Cursor-based pagination that works with custom sorting
+	if cursorData != nil && cursorData.LastRecord != nil && !countOnly {
+		table := r.registry.GetTable(params.TableName)
+		if table != nil && len(table.PrimaryKey) > 0 {
+			pkColumn := table.PrimaryKey[0]
+
+			// If custom sorting is used
+			if params.SortBy != "" && r.registry.IsColumnSortable(params.TableName, params.SortBy) {
+				sortColumn := params.SortBy
+				sortDir := "ASC"
+				if params.SortDir == "desc" {
+					sortDir = "DESC"
+				}
+
+				// Get last sort value and last PK from cursor
+				if lastSortValue, sortExists := cursorData.LastRecord[sortColumn]; sortExists {
+					if lastPK, pkExists := cursorData.LastRecord[pkColumn]; pkExists {
+						// Composite cursor condition for custom sort column + PK tiebreaker
+						if sortDir == "DESC" {
+							query += fmt.Sprintf(" AND (%s < $%d OR (%s = $%d AND %s < $%d))",
+								sortColumn, argPos, sortColumn, argPos, pkColumn, argPos+1)
+						} else {
+							query += fmt.Sprintf(" AND (%s > $%d OR (%s = $%d AND %s > $%d))",
+								sortColumn, argPos, sortColumn, argPos, pkColumn, argPos+1)
+						}
+						args = append(args, lastSortValue, lastPK)
+						argPos += 2
+					}
+				}
+			} else {
+				// Default: sort by PK only
+				if lastID, ok := cursorData.LastRecord[pkColumn]; ok {
+					query += fmt.Sprintf(" AND %s > $%d", pkColumn, argPos)
+					args = append(args, lastID)
+					argPos++
+				}
+			}
+		}
+	}
+
+	if !countOnly {
+		// Apply sorting
+		if params.SortBy != "" && r.registry.IsColumnSortable(params.TableName, params.SortBy) {
+			sortDir := "ASC"
+			if params.SortDir == "desc" {
+				sortDir = "DESC"
+			}
+
+			// Always add PK as tiebreaker for consistent pagination
+			table := r.registry.GetTable(params.TableName)
+			if table != nil && len(table.PrimaryKey) > 0 {
+				pkColumn := table.PrimaryKey[0]
+				if params.SortBy != pkColumn {
+					query += fmt.Sprintf(" ORDER BY %s %s, %s %s", params.SortBy, sortDir, pkColumn, sortDir)
+				} else {
+					query += fmt.Sprintf(" ORDER BY %s %s", params.SortBy, sortDir)
+				}
+			} else {
+				query += fmt.Sprintf(" ORDER BY %s %s", params.SortBy, sortDir)
+			}
+		} else {
+			// Default sort by primary key for consistent pagination
+			table := r.registry.GetTable(params.TableName)
+			if table != nil && len(table.PrimaryKey) > 0 {
+				query += fmt.Sprintf(" ORDER BY %s ASC", table.PrimaryKey[0])
+			}
+		}
+
+		query += fmt.Sprintf(" LIMIT $%d", argPos)
+		args = append(args, params.Limit+1)
+	}
+
+	return query, args
+}
+
+func (r *DynamicRepository) buildMultiColumnSearchQuery(params schema.QueryParams, searchColumns []string, searchTerm string) (string, []interface{}) {
+	var args []interface{}
+	argPos := 1
+	query := fmt.Sprintf("SELECT * FROM %s WHERE ", params.TableName)
+	var searchConditions []string
+	for _, col := range searchColumns {
+		searchConditions = append(searchConditions, fmt.Sprintf("%s ILIKE $%d", col, argPos))
+		args = append(args, "%"+searchTerm+"%")
+		argPos++
+	}
+
+	query += "(" + fmt.Sprintf("%s", searchConditions[0])
+	for i := 1; i < len(searchConditions); i++ {
+		query += " OR " + searchConditions[i]
+	}
+	query += ")"
+
+	for col, val := range params.Filters {
+		query += fmt.Sprintf(" AND %s = $%d", col, argPos)
+		args = append(args, val)
+		argPos++
+	}
+
+	// ✅ FIXED: Apply sorting with PK tiebreaker
+	table := r.registry.GetTable(params.TableName)
+	if params.SortBy != "" && r.registry.IsColumnSortable(params.TableName, params.SortBy) {
+		sortDir := "ASC"
+		if params.SortDir == "desc" {
+			sortDir = "DESC"
+		}
+
+		// Add PK as tiebreaker
+		if table != nil && len(table.PrimaryKey) > 0 {
+			pkColumn := table.PrimaryKey[0]
+			if params.SortBy != pkColumn {
+				query += fmt.Sprintf(" ORDER BY %s %s, %s %s", params.SortBy, sortDir, pkColumn, sortDir)
+			} else {
+				query += fmt.Sprintf(" ORDER BY %s %s", params.SortBy, sortDir)
+			}
+		} else {
+			query += fmt.Sprintf(" ORDER BY %s %s", params.SortBy, sortDir)
+		}
+	} else if table != nil && len(table.PrimaryKey) > 0 {
+		query += fmt.Sprintf(" ORDER BY %s ASC", table.PrimaryKey[0])
+	}
+
+	query += fmt.Sprintf(" LIMIT $%d", argPos)
+	args = append(args, params.Limit+1)
+	return query, args
 }

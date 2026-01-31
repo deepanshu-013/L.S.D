@@ -313,3 +313,79 @@ func (r *SchemaRegistry) GetColumnType(tableName, columnName string) string {
 	}
 	return ""
 }
+
+// RefreshSchema reloads the schema (alias for LoadSchema for compatibility)
+func (r *SchemaRegistry) RefreshSchema() error {
+	return r.LoadSchema(context.Background())
+}
+
+// AddTable manually adds/refreshes a single table to the registry
+func (r *SchemaRegistry) AddTable(tableName string) error {
+	ctx := context.Background()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Get table schema
+	var schema string
+	schemaQuery := `
+		SELECT table_schema 
+		FROM information_schema.tables 
+		WHERE table_name = $1 
+		AND table_schema NOT IN ('pg_catalog', 'information_schema')
+		LIMIT 1
+	`
+	if err := r.pool.QueryRow(ctx, schemaQuery, tableName).Scan(&schema); err != nil {
+		return fmt.Errorf("table not found: %w", err)
+	}
+
+	table := &TableInfo{
+		Name:   tableName,
+		Schema: schema,
+	}
+
+	// Load columns
+	columns, err := r.discoverColumns(ctx, schema, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to discover columns: %w", err)
+	}
+	table.Columns = columns
+
+	// Load primary key
+	primaryKey, err := r.discoverPrimaryKey(ctx, schema, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to discover primary key: %w", err)
+	}
+	table.PrimaryKey = primaryKey
+
+	// Load indexes
+	indexes, err := r.discoverIndexedColumns(ctx, schema, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to discover indexes: %w", err)
+	}
+	table.Indexes = indexes
+
+	// Load leading indexes
+	leadingIndexes, err := r.discoverLeadingIndexedColumns(ctx, schema, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to discover leading indexes: %w", err)
+	}
+	table.LeadingIndexes = leadingIndexes
+
+	// Mark primary and indexed columns
+	for i := range table.Columns {
+		for _, pk := range table.PrimaryKey {
+			if table.Columns[i].Name == pk {
+				table.Columns[i].IsPrimary = true
+			}
+		}
+		for _, idx := range table.Indexes {
+			if table.Columns[i].Name == idx {
+				table.Columns[i].IsIndexed = true
+			}
+		}
+	}
+
+	r.tables[tableName] = table
+	return nil
+}

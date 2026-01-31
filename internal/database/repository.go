@@ -1,282 +1,283 @@
 package database
 
 import (
-        "context"
-        "fmt"
-        "strings"
-        "time"
+	"context"
+	"fmt"
+	"strings"
+	"time"
 
-        "github.com/jackc/pgx/v5"
-        "highperf-api/internal/models"
-        "highperf-api/internal/pagination"
+	"highperf-api/internal/models"
+	"highperf-api/internal/pagination"
+
+	"github.com/jackc/pgx/v5"
 )
 
 var allowedSortColumns = map[string]bool{
-        "id":         true,
-        "created_at": true,
-        "updated_at": true,
-        "name":       true,
-        "category":   true,
+	"id":         true,
+	"created_at": true,
+	"updated_at": true,
+	"name":       true,
+	"category":   true,
 }
 
 var allowedFilterColumns = map[string]bool{
-        "category": true,
-        "status":   true,
-        "name":     true,
+	"category": true,
+	"status":   true,
+	"name":     true,
 }
 
 type Repository struct {
-        pool *Pool
+	pool *Pool
 }
 
 func NewRepository(pool *Pool) *Repository {
-        return &Repository{pool: pool}
+	return &Repository{pool: pool}
 }
 
 func (r *Repository) GetRecords(ctx context.Context, params models.QueryParams) ([]models.Record, string, error) {
-        sortBy := "id"
-        if params.SortBy != "" && allowedSortColumns[params.SortBy] {
-                sortBy = params.SortBy
-        }
+	sortBy := "id"
+	if params.SortBy != "" && allowedSortColumns[params.SortBy] {
+		sortBy = params.SortBy
+	}
 
-        sortDir := "ASC"
-        if strings.ToUpper(params.SortDir) == "DESC" {
-                sortDir = "DESC"
-        }
+	sortDir := "ASC"
+	if strings.ToUpper(params.SortDir) == "DESC" {
+		sortDir = "DESC"
+	}
 
-        limit := params.Limit
-        if limit <= 0 || limit > 50 {
-                limit = 20
-        }
+	limit := params.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
 
-        var whereConditions []string
-        var args []interface{}
-        argIndex := 1
+	var whereConditions []string
+	var args []interface{}
+	argIndex := 1
 
-        cursor, err := pagination.DecodeCursor(params.Cursor)
-        if err != nil {
-                return nil, "", fmt.Errorf("invalid cursor: %w", err)
-        }
+	cursor, err := pagination.DecodeCursor(params.Cursor)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid cursor: %w", err)
+	}
 
-        if cursor != nil {
-                var sortValue interface{}
-                switch sortBy {
-                case "created_at", "updated_at":
-                        parsedTime, err := pagination.ParseSortValueAsTime(cursor.SortValue)
-                        if err != nil {
-                                return nil, "", fmt.Errorf("invalid timestamp in cursor: %w", err)
-                        }
-                        sortValue = parsedTime
-                case "id":
-                        parsedID, err := pagination.ParseSortValueAsInt64(cursor.SortValue)
-                        if err != nil {
-                                sortValue = cursor.ID
-                        } else {
-                                sortValue = parsedID
-                        }
-                default:
-                        sortValue = cursor.SortValue
-                }
+	if cursor != nil {
+		var sortValue interface{}
+		switch sortBy {
+		case "created_at", "updated_at":
+			parsedTime, err := pagination.ParseSortValueAsTime(cursor.SortValue)
+			if err != nil {
+				return nil, "", fmt.Errorf("invalid timestamp in cursor: %w", err)
+			}
+			sortValue = parsedTime
+		case "id":
+			parsedID, err := pagination.ParseSortValueAsInt64(cursor.SortValue)
+			if err != nil {
+				sortValue = cursor.ID
+			} else {
+				sortValue = parsedID
+			}
+		default:
+			sortValue = cursor.SortValue
+		}
 
-                if sortDir == "ASC" {
-                        if sortBy == "id" {
-                                whereConditions = append(whereConditions, fmt.Sprintf("id > $%d", argIndex))
-                                args = append(args, cursor.ID)
-                                argIndex++
-                        } else {
-                                whereConditions = append(whereConditions, fmt.Sprintf("(%s > $%d OR (%s = $%d AND id > $%d))", sortBy, argIndex, sortBy, argIndex, argIndex+1))
-                                args = append(args, sortValue, cursor.ID)
-                                argIndex += 2
-                        }
-                } else {
-                        if sortBy == "id" {
-                                whereConditions = append(whereConditions, fmt.Sprintf("id < $%d", argIndex))
-                                args = append(args, cursor.ID)
-                                argIndex++
-                        } else {
-                                whereConditions = append(whereConditions, fmt.Sprintf("(%s < $%d OR (%s = $%d AND id < $%d))", sortBy, argIndex, sortBy, argIndex, argIndex+1))
-                                args = append(args, sortValue, cursor.ID)
-                                argIndex += 2
-                        }
-                }
-        }
+		if sortDir == "ASC" {
+			if sortBy == "id" {
+				whereConditions = append(whereConditions, fmt.Sprintf("id > $%d", argIndex))
+				args = append(args, cursor.ID)
+				argIndex++
+			} else {
+				whereConditions = append(whereConditions, fmt.Sprintf("(%s > $%d OR (%s = $%d AND id > $%d))", sortBy, argIndex, sortBy, argIndex, argIndex+1))
+				args = append(args, sortValue, cursor.ID)
+				argIndex += 2
+			}
+		} else {
+			if sortBy == "id" {
+				whereConditions = append(whereConditions, fmt.Sprintf("id < $%d", argIndex))
+				args = append(args, cursor.ID)
+				argIndex++
+			} else {
+				whereConditions = append(whereConditions, fmt.Sprintf("(%s < $%d OR (%s = $%d AND id < $%d))", sortBy, argIndex, sortBy, argIndex, argIndex+1))
+				args = append(args, sortValue, cursor.ID)
+				argIndex += 2
+			}
+		}
+	}
 
-        for key, value := range params.Filters {
-                if allowedFilterColumns[key] && value != "" {
-                        whereConditions = append(whereConditions, fmt.Sprintf("%s = $%d", key, argIndex))
-                        args = append(args, value)
-                        argIndex++
-                }
-        }
+	for key, value := range params.Filters {
+		if allowedFilterColumns[key] && value != "" {
+			whereConditions = append(whereConditions, fmt.Sprintf("%s = $%d", key, argIndex))
+			args = append(args, value)
+			argIndex++
+		}
+	}
 
-        whereClause := ""
-        if len(whereConditions) > 0 {
-                whereClause = "WHERE " + strings.Join(whereConditions, " AND ")
-        }
+	whereClause := ""
+	if len(whereConditions) > 0 {
+		whereClause = "WHERE " + strings.Join(whereConditions, " AND ")
+	}
 
-        query := fmt.Sprintf(`
+	query := fmt.Sprintf(`
                 SELECT id, name, category, status, value, created_at, updated_at
                 FROM records
                 %s
                 ORDER BY %s %s, id %s
                 LIMIT $%d
         `, whereClause, sortBy, sortDir, sortDir, argIndex)
-        args = append(args, limit+1)
+	args = append(args, limit+1)
 
-        rows, err := r.pool.Query(ctx, query, args...)
-        if err != nil {
-                return nil, "", fmt.Errorf("query failed: %w", err)
-        }
-        defer rows.Close()
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
 
-        var records []models.Record
-        for rows.Next() {
-                var record models.Record
-                err := rows.Scan(
-                        &record.ID,
-                        &record.Name,
-                        &record.Category,
-                        &record.Status,
-                        &record.Value,
-                        &record.CreatedAt,
-                        &record.UpdatedAt,
-                )
-                if err != nil {
-                        return nil, "", fmt.Errorf("scan failed: %w", err)
-                }
-                records = append(records, record)
-        }
+	var records []models.Record
+	for rows.Next() {
+		var record models.Record
+		err := rows.Scan(
+			&record.ID,
+			&record.Name,
+			&record.Category,
+			&record.Status,
+			&record.Value,
+			&record.CreatedAt,
+			&record.UpdatedAt,
+		)
+		if err != nil {
+			return nil, "", fmt.Errorf("scan failed: %w", err)
+		}
+		records = append(records, record)
+	}
 
-        if err := rows.Err(); err != nil {
-                return nil, "", fmt.Errorf("rows error: %w", err)
-        }
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("rows error: %w", err)
+	}
 
-        var nextCursor string
-        if len(records) > limit {
-                records = records[:limit]
-                lastRecord := records[len(records)-1]
-                var sortValue interface{}
-                switch sortBy {
-                case "created_at":
-                        sortValue = lastRecord.CreatedAt
-                case "updated_at":
-                        sortValue = lastRecord.UpdatedAt
-                case "name":
-                        sortValue = lastRecord.Name
-                case "category":
-                        sortValue = lastRecord.Category
-                default:
-                        sortValue = lastRecord.ID
-                }
-                nextCursor = pagination.EncodeCursor(lastRecord.ID, sortBy, sortValue)
-        }
+	var nextCursor string
+	if len(records) > limit {
+		records = records[:limit]
+		lastRecord := records[len(records)-1]
+		var sortValue interface{}
+		switch sortBy {
+		case "created_at":
+			sortValue = lastRecord.CreatedAt
+		case "updated_at":
+			sortValue = lastRecord.UpdatedAt
+		case "name":
+			sortValue = lastRecord.Name
+		case "category":
+			sortValue = lastRecord.Category
+		default:
+			sortValue = lastRecord.ID
+		}
+		nextCursor = pagination.EncodeCursor(lastRecord.ID, sortBy, sortValue)
+	}
 
-        return records, nextCursor, nil
+	return records, nextCursor, nil
 }
 
 func (r *Repository) GetRecordByID(ctx context.Context, id int64) (*models.Record, error) {
-        query := `
+	query := `
                 SELECT id, name, category, status, value, created_at, updated_at
                 FROM records
                 WHERE id = $1
         `
 
-        var record models.Record
-        err := r.pool.QueryRow(ctx, query, id).Scan(
-                &record.ID,
-                &record.Name,
-                &record.Category,
-                &record.Status,
-                &record.Value,
-                &record.CreatedAt,
-                &record.UpdatedAt,
-        )
-        if err != nil {
-                if err == pgx.ErrNoRows {
-                        return nil, nil
-                }
-                return nil, fmt.Errorf("query failed: %w", err)
-        }
+	var record models.Record
+	err := r.pool.QueryRow(ctx, query, id).Scan(
+		&record.ID,
+		&record.Name,
+		&record.Category,
+		&record.Status,
+		&record.Value,
+		&record.CreatedAt,
+		&record.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
 
-        return &record, nil
+	return &record, nil
 }
 
 func (r *Repository) SearchRecords(ctx context.Context, searchTerm string, params models.QueryParams) ([]models.Record, string, error) {
-        limit := params.Limit
-        if limit <= 0 || limit > 50 {
-                limit = 20
-        }
+	limit := params.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
 
-        var whereConditions []string
-        var args []interface{}
-        argIndex := 1
+	var whereConditions []string
+	var args []interface{}
+	argIndex := 1
 
-        whereConditions = append(whereConditions, fmt.Sprintf("name ILIKE $%d", argIndex))
-        args = append(args, "%"+searchTerm+"%")
-        argIndex++
+	whereConditions = append(whereConditions, fmt.Sprintf("name ILIKE $%d", argIndex))
+	args = append(args, "%"+searchTerm+"%")
+	argIndex++
 
-        cursor, err := pagination.DecodeCursor(params.Cursor)
-        if err != nil {
-                return nil, "", fmt.Errorf("invalid cursor: %w", err)
-        }
+	cursor, err := pagination.DecodeCursor(params.Cursor)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid cursor: %w", err)
+	}
 
-        if cursor != nil {
-                whereConditions = append(whereConditions, fmt.Sprintf("id > $%d", argIndex))
-                args = append(args, cursor.ID)
-                argIndex++
-        }
+	if cursor != nil {
+		whereConditions = append(whereConditions, fmt.Sprintf("id > $%d", argIndex))
+		args = append(args, cursor.ID)
+		argIndex++
+	}
 
-        whereClause := "WHERE " + strings.Join(whereConditions, " AND ")
+	whereClause := "WHERE " + strings.Join(whereConditions, " AND ")
 
-        query := fmt.Sprintf(`
+	query := fmt.Sprintf(`
                 SELECT id, name, category, status, value, created_at, updated_at
                 FROM records
                 %s
                 ORDER BY id ASC
                 LIMIT $%d
         `, whereClause, argIndex)
-        args = append(args, limit+1)
+	args = append(args, limit+1)
 
-        rows, err := r.pool.Query(ctx, query, args...)
-        if err != nil {
-                return nil, "", fmt.Errorf("query failed: %w", err)
-        }
-        defer rows.Close()
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
 
-        var records []models.Record
-        for rows.Next() {
-                var record models.Record
-                err := rows.Scan(
-                        &record.ID,
-                        &record.Name,
-                        &record.Category,
-                        &record.Status,
-                        &record.Value,
-                        &record.CreatedAt,
-                        &record.UpdatedAt,
-                )
-                if err != nil {
-                        return nil, "", fmt.Errorf("scan failed: %w", err)
-                }
-                records = append(records, record)
-        }
+	var records []models.Record
+	for rows.Next() {
+		var record models.Record
+		err := rows.Scan(
+			&record.ID,
+			&record.Name,
+			&record.Category,
+			&record.Status,
+			&record.Value,
+			&record.CreatedAt,
+			&record.UpdatedAt,
+		)
+		if err != nil {
+			return nil, "", fmt.Errorf("scan failed: %w", err)
+		}
+		records = append(records, record)
+	}
 
-        if err := rows.Err(); err != nil {
-                return nil, "", fmt.Errorf("rows error: %w", err)
-        }
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("rows error: %w", err)
+	}
 
-        var nextCursor string
-        if len(records) > limit {
-                records = records[:limit]
-                lastRecord := records[len(records)-1]
-                nextCursor = pagination.EncodeCursor(lastRecord.ID, "id", lastRecord.ID)
-        }
+	var nextCursor string
+	if len(records) > limit {
+		records = records[:limit]
+		lastRecord := records[len(records)-1]
+		nextCursor = pagination.EncodeCursor(lastRecord.ID, "id", lastRecord.ID)
+	}
 
-        return records, nextCursor, nil
+	return records, nextCursor, nil
 }
 
 func (r *Repository) GetStats(ctx context.Context) (map[string]interface{}, error) {
-        query := `
+	query := `
                 SELECT 
                         COUNT(*) as total_count,
                         COUNT(DISTINCT category) as category_count,
@@ -285,24 +286,113 @@ func (r *Repository) GetStats(ctx context.Context) (map[string]interface{}, erro
                 FROM records
         `
 
-        var totalCount, categoryCount int64
-        var totalValue, avgValue float64
+	var totalCount, categoryCount int64
+	var totalValue, avgValue float64
 
-        err := r.pool.QueryRow(ctx, query).Scan(&totalCount, &categoryCount, &totalValue, &avgValue)
-        if err != nil {
-                return nil, fmt.Errorf("query failed: %w", err)
-        }
+	err := r.pool.QueryRow(ctx, query).Scan(&totalCount, &categoryCount, &totalValue, &avgValue)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
 
-        return map[string]interface{}{
-                "total_count":    totalCount,
-                "category_count": categoryCount,
-                "total_value":    totalValue,
-                "avg_value":      avgValue,
-        }, nil
+	return map[string]interface{}{
+		"total_count":    totalCount,
+		"category_count": categoryCount,
+		"total_value":    totalValue,
+		"avg_value":      avgValue,
+	}, nil
+}
+
+// SearchWithOffset - High-performance search with database-level OFFSET pagination
+func (r *DynamicRepository) SearchWithOffset(
+	ctx context.Context,
+	tableName, searchTerm string,
+	searchColumns []string,
+	limit, offset int,
+) ([]map[string]interface{}, int, error) {
+
+	table := r.registry.GetTable(tableName)
+	if table == nil {
+		return nil, 0, fmt.Errorf("table %s not found", tableName)
+	}
+
+	if len(searchColumns) == 0 {
+		return nil, 0, fmt.Errorf("no search columns specified")
+	}
+
+	var conditions []string
+	var args []interface{}
+	argCount := 1
+
+	searchPattern := "%" + searchTerm + "%"
+
+	for _, col := range searchColumns {
+		conditions = append(conditions, fmt.Sprintf("%s::TEXT ILIKE $%d", col, argCount))
+		args = append(args, searchPattern)
+		argCount++
+	}
+
+	whereClause := strings.Join(conditions, " OR ")
+
+	// ✅ Fix: Handle PrimaryKey as []string
+	sortCol := "ctid" // Default to PostgreSQL internal row ID
+	if len(table.PrimaryKey) > 0 {
+		sortCol = table.PrimaryKey[0] // Use first primary key column
+	} else {
+		sortableCols := r.registry.GetSortableColumns(tableName)
+		if len(sortableCols) > 0 {
+			sortCol = sortableCols[0]
+		} else if len(table.Columns) > 0 {
+			sortCol = table.Columns[0].Name
+		}
+	}
+
+	// Count total matches
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s`, tableName, whereClause)
+	var totalCount int
+	err := r.pool.QueryRow(ctx, countQuery, args...).Scan(&totalCount)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count query failed: %w", err)
+	}
+
+	// Search query with LIMIT and OFFSET
+	searchQuery := fmt.Sprintf(
+		`SELECT * FROM %s WHERE %s ORDER BY %s LIMIT $%d OFFSET $%d`,
+		tableName,
+		whereClause,
+		sortCol,
+		argCount,
+		argCount+1,
+	)
+
+	args = append(args, limit, offset)
+
+	rows, err := r.pool.Query(ctx, searchQuery, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("search query failed: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]map[string]interface{}, 0)
+	fieldDescriptions := rows.FieldDescriptions()
+
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			continue
+		}
+
+		record := make(map[string]interface{})
+		for i, fd := range fieldDescriptions {
+			record[string(fd.Name)] = values[i]
+		}
+		results = append(results, record)
+	}
+
+	return results, totalCount, nil
 }
 
 func (r *Repository) EnsureSchema(ctx context.Context) error {
-        query := `
+	query := `
                 CREATE TABLE IF NOT EXISTS records (
                         id BIGSERIAL PRIMARY KEY,
                         name VARCHAR(255) NOT NULL,
@@ -321,36 +411,36 @@ func (r *Repository) EnsureSchema(ctx context.Context) error {
                 CREATE INDEX IF NOT EXISTS idx_records_status_id ON records(status, id);
         `
 
-        _, err := r.pool.Exec(ctx, query)
-        if err != nil {
-                return fmt.Errorf("failed to ensure schema: %w", err)
-        }
+	_, err := r.pool.Exec(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to ensure schema: %w", err)
+	}
 
-        var count int
-        err = r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM records").Scan(&count)
-        if err != nil {
-                return fmt.Errorf("failed to count records: %w", err)
-        }
+	var count int
+	err = r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM records").Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to count records: %w", err)
+	}
 
-        if count == 0 {
-                categories := []string{"electronics", "clothing", "food", "services", "software"}
-                statuses := []string{"active", "pending", "completed", "cancelled"}
+	if count == 0 {
+		categories := []string{"electronics", "clothing", "food", "services", "software"}
+		statuses := []string{"active", "pending", "completed", "cancelled"}
 
-                for i := 0; i < 100; i++ {
-                        name := fmt.Sprintf("Record %d", i+1)
-                        category := categories[i%len(categories)]
-                        status := statuses[i%len(statuses)]
-                        value := float64((i+1)*10) + 0.99
+		for i := 0; i < 100; i++ {
+			name := fmt.Sprintf("Record %d", i+1)
+			category := categories[i%len(categories)]
+			status := statuses[i%len(statuses)]
+			value := float64((i+1)*10) + 0.99
 
-                        _, err := r.pool.Exec(ctx, `
+			_, err := r.pool.Exec(ctx, `
                                 INSERT INTO records (name, category, status, value, created_at, updated_at)
                                 VALUES ($1, $2, $3, $4, $5, $5)
                         `, name, category, status, value, time.Now().Add(-time.Duration(100-i)*time.Hour))
-                        if err != nil {
-                                return fmt.Errorf("failed to insert sample data: %w", err)
-                        }
-                }
-        }
+			if err != nil {
+				return fmt.Errorf("failed to insert sample data: %w", err)
+			}
+		}
+	}
 
-        return nil
+	return nil
 }

@@ -1,0 +1,832 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "High-Performance Dynamic API",
+    "version": "1.0.0",
+    "description": "L.S.D (Large Seach of Data) API with real-time search, CDC sync, cursor pagination, and ClickHouse/PostgreSQL support",
+    "contact": {
+      "name": "API Support"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000",
+      "description": "Local development server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Health & Monitoring",
+      "description": "Service health and status endpoints"
+    },
+    {
+      "name": "Table Discovery",
+      "description": "Database table introspection"
+    },
+    {
+      "name": "Data Access",
+      "description": "Record retrieval and pagination"
+    },
+    {
+      "name": "Search",
+      "description": "Full-text search capabilities"
+    },
+    {
+      "name": "Analytics",
+      "description": "Statistics and metrics"
+    },
+    {
+      "name": "Webhooks",
+      "description": "Bot integration endpoints"
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": [
+          "Health & Monitoring"
+        ],
+        "summary": "Health Check",
+        "description": "Check API service status and database connections. Use for Kubernetes liveness/readiness probes.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "healthy"
+                    },
+                    "service": {
+                      "type": "string",
+                      "example": "dynamic-api"
+                    },
+                    "tables_count": {
+                      "type": "integer",
+                      "example": 15
+                    },
+                    "clickhouse": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "redis": {
+                      "type": "boolean",
+                      "example": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cdc/status": {
+      "get": {
+        "tags": [
+          "Health & Monitoring"
+        ],
+        "summary": "CDC Status",
+        "description": "Get Change Data Capture sync status for ClickHouse. Monitor real-time sync lag between PostgreSQL and ClickHouse.",
+        "operationId": "getCDCStatus",
+        "responses": {
+          "200": {
+            "description": "CDC status retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "is_running": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "available": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "total_tables": {
+                      "type": "integer",
+                      "example": 5
+                    },
+                    "table_statuses": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "synced": {
+                            "type": "integer"
+                          },
+                          "last_sync": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables": {
+      "get": {
+        "tags": [
+          "Table Discovery"
+        ],
+        "summary": "List All Tables",
+        "description": "Discover all available database tables and their capabilities. Use to auto-generate UI forms, build query builders, or API documentation.",
+        "operationId": "getTables",
+        "responses": {
+          "200": {
+            "description": "List of tables retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tables": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TableInfo"
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/schema": {
+      "get": {
+        "tags": [
+          "Table Discovery"
+        ],
+        "summary": "Get Table Schema",
+        "description": "Get detailed column definitions for a specific table. Use to generate TypeScript types, validate inputs, or build dynamic forms.",
+        "operationId": "getTableSchema",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Table name",
+            "example": "b2b"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Table schema retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableSchema"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/records": {
+      "get": {
+        "tags": [
+          "Data Access"
+        ],
+        "summary": "Get Records (Paginated)",
+        "description": "Fetch records with cursor-based pagination, filtering, and sorting. Use for infinite scroll, data tables, or export pipelines.",
+        "operationId": "getRecords",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Table name"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 100
+            },
+            "description": "Records per page"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Pagination cursor from previous response"
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Column to sort by"
+          },
+          {
+            "name": "sort_dir",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "description": "Sort direction"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Records retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/records/{pk}": {
+      "get": {
+        "tags": [
+          "Data Access"
+        ],
+        "summary": "Get Record by Primary Key",
+        "description": "Fetch a single record by its primary key. Use for detail pages, profile views, or direct lookups.",
+        "operationId": "getRecordByPK",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Table name"
+          },
+          {
+            "name": "pk",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Primary key value"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Record retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Record object with dynamic fields"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found"
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/search": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Search Records (Single Table)",
+        "description": "Full-text search across text columns with auto-fallback. Auto-uses ClickHouse for speed, falls back to PostgreSQL if unavailable. Use for search bars, autocomplete, or fuzzy matching.",
+        "operationId": "searchTable",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Table name"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 100
+            },
+            "description": "Search term"
+          },
+          {
+            "name": "columns",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated columns to search"
+          },
+          {
+            "name": "engine",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "clickhouse",
+                "postgresql",
+                "auto"
+              ]
+            },
+            "description": "Search engine to use (auto-selects by default)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 100
+            },
+            "description": "Results per page"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Pagination cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search/global": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Global Search (All Tables)",
+        "description": "Search across all tables simultaneously with offset pagination. Use for universal search boxes, admin dashboards, or cross-entity discovery.",
+        "operationId": "globalSearch",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 100
+            },
+            "description": "Search term"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 100
+            },
+            "description": "Results per table"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            },
+            "description": "Skip N results"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Page number (alternative to offset)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Global search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlobalSearchResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/stats": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Get Table Statistics",
+        "description": "Get row counts and sync statistics. Use for dashboard metrics, data quality monitoring, or sync verification.",
+        "operationId": "getTableStats",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Table name"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Table statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableStats"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook/telegram": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Telegram Webhook",
+        "description": "Receive Telegram bot commands: /start, /help, /list [table], /search [table] [query], /get [table] [id], /stats. Use for chat-based data access, notifications, or alerts.",
+        "operationId": "telegramWebhook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Telegram webhook payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Command processed"
+          }
+        }
+      }
+    },
+    "/webhook/whatsapp": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "WhatsApp Webhook Verification",
+        "description": "Webhook verification for WhatsApp integration",
+        "operationId": "whatsappVerification",
+        "responses": {
+          "200": {
+            "description": "Verification successful"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "WhatsApp Webhook",
+        "description": "Receive WhatsApp messages. Use for customer support bots or two-way messaging.",
+        "operationId": "whatsappWebhook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "WhatsApp webhook payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Message processed"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "TableInfo": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "b2b"
+          },
+          "schema": {
+            "type": "string",
+            "example": "public"
+          },
+          "columns": {
+            "type": "integer",
+            "example": 18
+          },
+          "primary_key": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "id"
+            ]
+          },
+          "sortable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "filterable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "searchable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "clickhouse_search": {
+            "type": "boolean",
+            "example": true
+          }
+        }
+      },
+      "TableSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "data_type": {
+                  "type": "string"
+                },
+                "is_nullable": {
+                  "type": "boolean"
+                },
+                "is_primary_key": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "primary_key": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "indexes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sortable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "filterable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "searchable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "clickhouse_search": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RecordsResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "table": {
+            "type": "string"
+          },
+          "cached": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "table": {
+            "type": "string"
+          },
+          "search_columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "search_engine": {
+            "type": "string",
+            "example": "clickhouse"
+          }
+        }
+      },
+      "GlobalSearchResponse": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "count": {
+                  "type": "integer"
+                },
+                "total": {
+                  "type": "integer"
+                },
+                "page": {
+                  "type": "integer"
+                },
+                "limit": {
+                  "type": "integer"
+                },
+                "offset": {
+                  "type": "integer"
+                },
+                "total_pages": {
+                  "type": "integer"
+                },
+                "has_next": {
+                  "type": "boolean"
+                },
+                "has_previous": {
+                  "type": "boolean"
+                },
+                "search_engine": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "total_results": {
+            "type": "integer"
+          },
+          "tables_searched": {
+            "type": "integer"
+          },
+          "search_time": {
+            "type": "integer",
+            "description": "Search time in milliseconds"
+          },
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "clickhouse_available": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TableStats": {
+        "type": "object",
+        "properties": {
+          "table": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "estimated_rows": {
+            "type": "integer"
+          },
+          "clickhouse_indexed": {
+            "type": "integer"
+          },
+          "clickhouse_last_sync": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  }
+}

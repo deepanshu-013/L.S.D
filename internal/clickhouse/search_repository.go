@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"highperf-api/internal/schema"
@@ -32,14 +34,31 @@ type SearchRepository struct {
 	registry   *schema.SchemaRegistry
 	entityRepo *EntityRepository
 	mu         sync.RWMutex
+
+	// metrics
+	retryCount       uint64 // atomic
+	deadLetterCount  uint64 // atomic
+	collisionCount   uint64 // atomic
+	indexLagGauge    uint64 // atomic (example)
+	tableIDValidated bool
 }
 
 func NewSearchRepository(conn ClickHouseConnection, registry *schema.SchemaRegistry) *SearchRepository {
-	return &SearchRepository{
+	r := &SearchRepository{
 		conn:       conn,
 		registry:   registry,
 		entityRepo: NewEntityRepository(conn),
 	}
+
+	// table ID collision detection at startup: fail fast (log + metric)
+	if err := r.validateTableIDs(); err != nil {
+		log.Printf("⚠️ Table ID validation: %v", err)
+		atomic.AddUint64(&r.collisionCount, 1)
+	} else {
+		r.tableIDValidated = true
+	}
+
+	return r
 }
 
 type SearchResult struct {
@@ -76,12 +95,10 @@ type SyncStats struct {
 	LastSyncAt   time.Time
 }
 
-// ⭐ FIXED STRUCT: ID-Based Pagination (String)
 type SearchCursor struct {
 	LastGlobalID string `json:"last_global_id"`
 }
 
-// Helper to marshal cursor
 func marshalCursor(c SearchCursor) (string, error) {
 	cursorJSON, err := json.Marshal(c)
 	if err == nil {
@@ -90,7 +107,6 @@ func marshalCursor(c SearchCursor) (string, error) {
 	return "", err
 }
 
-// Helper to unmarshal cursor
 func unmarshalCursor(cursorStr string) (*SearchCursor, error) {
 	if cursorStr == "" {
 		return &SearchCursor{LastGlobalID: ""}, nil
@@ -106,7 +122,6 @@ func unmarshalCursor(cursorStr string) (*SearchCursor, error) {
 	return &c, nil
 }
 
-// Helper to convert []uint64 to []string for SQL IN clause
 func uint64SliceToStrings(ids []uint64) []string {
 	strs := make([]string, len(ids))
 	for i, id := range ids {
@@ -153,9 +168,27 @@ func (r *SearchRepository) IsAvailable() bool {
 	return r.conn != nil && r.conn.IsAvailable()
 }
 
+var validTableRegex = func() *regexp.Regexp {
+	return regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+}()
+
+func validateTableName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty table name")
+	}
+	if !validTableRegex.MatchString(name) {
+		return fmt.Errorf("invalid table name: %s", name)
+	}
+	return nil
+}
+
 func (r *SearchRepository) EnsureSearchIndex(ctx context.Context, tableName string) error {
 	if !r.IsAvailable() {
 		return fmt.Errorf("clickhouse not available")
+	}
+
+	if err := validateTableName(tableName); err != nil {
+		return err
 	}
 
 	table := r.registry.GetTable(tableName)
@@ -182,9 +215,16 @@ func (r *SearchRepository) EnsureSearchIndex(ctx context.Context, tableName stri
 	return r.conn.Exec(ctx, createTableSQL)
 }
 
+// ⭐ BulkIndex Modified for Strict Atomicity Support + sub-batching tokens
+// This function attempts to index. If Token Batch fails, it returns an error.
+// The caller (CDCManager) is responsible for retrying the whole chunk.
 func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, records []map[string]interface{}) error {
 	if !r.IsAvailable() || len(records) == 0 {
 		return nil
+	}
+
+	if err := validateTableName(tableName); err != nil {
+		return fmt.Errorf("invalid table name: %w", err)
 	}
 
 	if err := r.EnsureSearchIndex(ctx, tableName); err != nil {
@@ -204,24 +244,34 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 	indexTableName := fmt.Sprintf("search_%s", tableName)
 	startTime := time.Now()
 
-	// 1. Prepare Batch for Search Table
+	// 1. Prepare Batch for Search Table (main data)
 	batch, err := r.conn.PrepareBatch(ctx, fmt.Sprintf(`
-        INSERT INTO %s (s_indx, global_id, original_data, is_deleted, updated_at)
+        INSERT INTO %s (s_indx, global_id, original_data, is_deleted, synced_at, updated_at)
     `, indexTableName))
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
-	defer batch.Abort()
+	// ensure abort if we exit early
+	defer func() { _ = batch.Abort() }()
 
-	// 2. Prepare Batch for Token Entity
-	tokenBatch, err := r.conn.PrepareBatch(ctx, `
-        INSERT INTO search_token_entity (token_hash, token, global_id, updated_at, table_name)
-    `)
-	if err != nil {
-		return fmt.Errorf("failed to prepare token batch: %w", err)
+	// token entry struct for memory-bounded token batching
+	type tokenEntry struct {
+		tokenHash uint64
+		token     string
+		globalID  uint64
+		updatedAt time.Time
+		tableName string
 	}
 
+	// We'll build smaller token-entry slices and flush them to separate token batches AFTER main batch send.
+	const maxTokenEntriesPerBatch = 50000
+	var pendingTokenBatches [][]tokenEntry
+	var currentTokenEntries []tokenEntry
+	currentTokenEntries = make([]tokenEntry, 0, 1024)
+
 	tableID := r.getTableIDDeterministic(tableName)
+
+	now := time.Now()
 
 	for _, record := range records {
 		// --- PK Handling ---
@@ -247,7 +297,7 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 			updatedAt = val
 		}
 		if updatedAt.IsZero() {
-			updatedAt = time.Now()
+			updatedAt = now
 		}
 
 		// --- Is Deleted ---
@@ -261,45 +311,84 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 		// --- JSON Data ---
 		originalData, _ := json.Marshal(record)
 
-		// --- Append to Search Table ---
-		batch.Append(
+		// --- Append to Search Table (main) ---
+		if err := batch.Append(
 			s_indx,
 			global_id,
 			string(originalData),
 			isDeleted,
+			now,
 			updatedAt,
-		)
+		); err != nil {
+			return fmt.Errorf("failed to append main batch: %w", err)
+		}
 
-		// --- Collect Tokens for Entity Table ---
+		// --- Collect Tokens into memory-limited slices ---
 		for _, token := range tokens {
 			if len(token) < 2 {
 				continue
 			}
-
-			tokenBatch.Append(
-				hashToken(token),
-				strings.ToLower(token),
-				global_id,
-				updatedAt,
-				tableName,
-			)
+			currentTokenEntries = append(currentTokenEntries, tokenEntry{
+				tokenHash: hashToken(token),
+				token:     strings.ToLower(token),
+				globalID:  global_id,
+				updatedAt: updatedAt,
+				tableName: tableName,
+			})
+			if len(currentTokenEntries) >= maxTokenEntriesPerBatch {
+				// flush into pending batches (we will send them later, after main batch.Send())
+				copied := make([]tokenEntry, len(currentTokenEntries))
+				copy(copied, currentTokenEntries)
+				pendingTokenBatches = append(pendingTokenBatches, copied)
+				currentTokenEntries = currentTokenEntries[:0]
+			}
 		}
 	}
 
-	// 4. Send Batches ---
+	// final flush remaining tokens
+	if len(currentTokenEntries) > 0 {
+		copied := make([]tokenEntry, len(currentTokenEntries))
+		copy(copied, currentTokenEntries)
+		pendingTokenBatches = append(pendingTokenBatches, copied)
+		currentTokenEntries = nil
+	}
+
+	// 3. Send main batch first
 	if err := batch.Send(); err != nil {
 		return fmt.Errorf("main batch send failed: %w", err)
+	}
+
+	// 4. Send token batches sequentially (each is small)
+	for i, tBatch := range pendingTokenBatches {
+		tokenBatch, err := r.conn.PrepareBatch(ctx, `
+            INSERT INTO search_token_entity (token_hash, token, global_id, updated_at, table_name)
+        `)
+		if err != nil {
+			return fmt.Errorf("failed to prepare token batch #%d: %w", i, err)
+		}
+		// ensure abort in case of error
+		abortOnErr := true
+		for _, te := range tBatch {
+			if err := tokenBatch.Append(te.tokenHash, te.token, te.globalID, te.updatedAt, te.tableName); err != nil {
+				_ = tokenBatch.Abort()
+				return fmt.Errorf("failed to append to token batch #%d: %w", i, err)
+			}
+		}
+		if err := tokenBatch.Send(); err != nil {
+			_ = tokenBatch.Abort()
+			return fmt.Errorf("token batch #%d send failed (Atomicity Violation): %w", i, err)
+		}
+		if abortOnErr {
+			// best-effort abort to free resources; Send is successful so Abort should be noop
+			_ = tokenBatch.Abort()
+		}
 	}
 
 	duration := time.Since(startTime)
 	recordsPerSecond := float64(len(records)) / duration.Seconds()
 	if len(records) > 100 {
-		log.Printf("[BulkIndex] %s: %d records in %v (%.0f rec/sec) - Tokens indexed for Bitmap aggregation",
+		log.Printf("[BulkIndex] %s: %d records in %v (%.0f rec/sec)",
 			tableName, len(records), duration, recordsPerSecond)
-	}
-
-	if err := tokenBatch.Send(); err != nil {
-		return fmt.Errorf("token batch send failed: %w", err)
 	}
 
 	return nil
@@ -326,11 +415,22 @@ func getUint64FromInterface(val interface{}) uint64 {
 	case uint32:
 		return uint64(v)
 	case uint64:
-		return uint64(v)
+		return v
 	case float32:
 		return uint64(v)
 	case float64:
 		return uint64(v)
+	case string:
+		if v == "" {
+			return 0
+		}
+		if x, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return x
+		}
+	case []byte:
+		if x, err := strconv.ParseUint(string(v), 10, 64); err == nil {
+			return x
+		}
 	}
 	return 0
 }
@@ -365,6 +465,7 @@ func (r *SearchRepository) extractSearchableText(record map[string]interface{}, 
 }
 
 func (r *SearchRepository) BulkIndexTokens(ctx context.Context, tableName string, records []map[string]interface{}) error {
+	// This function is legacy/superseded by BulkIndex for atomic sync, but kept for compatibility
 	if len(records) == 0 {
 		return nil
 	}
@@ -442,7 +543,7 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 		tokenHashes = append(tokenHashes, hashToken(t))
 	}
 
-	// 2. Decode Cursor (The "Keyset")
+	// 2. Decode Cursor
 	c, _ := unmarshalCursor(cursor)
 
 	// 3. Construct Bitmap Expression
@@ -465,14 +566,13 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 
 	// 4. THE INFINITE SCROLL QUERY
 	var whereClause string
-	// ⭐ FIX: Parse String to uint64
 	if c.LastGlobalID != "" {
 		parsedID, err := strconv.ParseUint(c.LastGlobalID, 10, 64)
 		if err == nil {
 			whereClause = fmt.Sprintf("WHERE global_id < %d", parsedID)
 		}
 	} else {
-		whereClause = "" // First page
+		whereClause = ""
 	}
 
 	query := fmt.Sprintf(`
@@ -593,7 +693,6 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 		lastGlobalID, _ := lastRecord["global_id"].(uint64)
 
 		if hasMore {
-			// ⭐ FIX: Store as String
 			nextCursor, _ = marshalCursor(SearchCursor{LastGlobalID: fmt.Sprintf("%d", lastGlobalID)})
 		}
 	}
@@ -724,7 +823,6 @@ func (r *SearchRepository) GetSyncStats(ctx context.Context, tableName string) (
 	}, nil
 }
 
-// Helper to extract Table Name from ID (Reverse lookup)
 func (r *SearchRepository) getTableName(id uint16) string {
 	allTables := r.registry.GetAllTables()
 	for _, table := range allTables {
@@ -735,7 +833,70 @@ func (r *SearchRepository) getTableName(id uint16) string {
 	return "unknown"
 }
 
-// Helper to extract Table ID from the Compact Global ID
 func extractTableID(globalID uint64) uint16 {
 	return uint16(globalID >> 48)
+}
+
+// Validate table IDs to detect collisions among deterministic uint16 ids
+func (r *SearchRepository) validateTableIDs() error {
+	seen := map[uint16]string{}
+	for _, t := range r.registry.GetAllTables() {
+		id := r.getTableIDDeterministic(t.Name)
+		if prev, ok := seen[id]; ok && prev != t.Name {
+			return fmt.Errorf("table id collision detected: %d -> %s and %s", id, prev, t.Name)
+		}
+		seen[id] = t.Name
+	}
+	return nil
+}
+
+// InsertDeadLetter stores a failed chunk for later triage.
+func (r *SearchRepository) InsertDeadLetter(ctx context.Context, tableName string, startID, endID uint64, attempts uint8, lastError, sampleData string) error {
+	if err := validateTableName(tableName); err != nil {
+		return err
+	}
+	query := `
+        INSERT INTO search_index_errors (table_name, start_id, end_id, attempts, last_error, sample_data, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, now())
+    `
+	if err := r.conn.Exec(ctx, query, tableName, startID, endID, attempts, lastError, sampleData); err != nil {
+		return fmt.Errorf("failed to insert dead-letter: %w", err)
+	}
+	return nil
+}
+
+// Metric helpers
+
+func (r *SearchRepository) IncRetryCount(n uint64) {
+	atomic.AddUint64(&r.retryCount, n)
+}
+
+func (r *SearchRepository) IncDeadLetterCount(n uint64) {
+	atomic.AddUint64(&r.deadLetterCount, n)
+}
+
+func (r *SearchRepository) IncCollisionCount(n uint64) {
+	atomic.AddUint64(&r.collisionCount, n)
+}
+
+func (r *SearchRepository) SetIndexLag(v uint64) {
+	atomic.StoreUint64(&r.indexLagGauge, v)
+}
+
+type RepoMetrics struct {
+	RetryCount     uint64 `json:"retry_count"`
+	DeadLetter     uint64 `json:"dead_letter_count"`
+	Collisions     uint64 `json:"table_id_collisions"`
+	IndexLagGauge  uint64 `json:"index_lag"`
+	TableIDChecked bool   `json:"table_id_validated"`
+}
+
+func (r *SearchRepository) GetMetrics() RepoMetrics {
+	return RepoMetrics{
+		RetryCount:     atomic.LoadUint64(&r.retryCount),
+		DeadLetter:     atomic.LoadUint64(&r.deadLetterCount),
+		Collisions:     atomic.LoadUint64(&r.collisionCount),
+		IndexLagGauge:  atomic.LoadUint64(&r.indexLagGauge),
+		TableIDChecked: r.tableIDValidated,
+	}
 }

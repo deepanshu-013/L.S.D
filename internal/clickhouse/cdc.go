@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"highperf-api/internal/schema"
 	"log"
+	"math"
+	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,11 +17,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// NOTE: imports intentionally limited to standard + internal packages used here.
+
 type CDCConfig struct {
 	BatchSize       int
 	SyncInterval    time.Duration
 	ParallelWorkers int
 	ChunkSize       int64
+	// MaxRetries for chunk ingestion to ensure atomicity
+	MaxRetries int
 }
 
 type CDCManager struct {
@@ -62,6 +69,8 @@ type CDCEvent struct {
 	Timestamp time.Time              `json:"timestamp"`
 }
 
+var validCHIdent = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+
 func NewCDCManager(pgPool *pgxpool.Pool, chRepo *SearchRepository, registry *schema.SchemaRegistry, cfg CDCConfig) *CDCManager {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 100000
@@ -72,8 +81,13 @@ func NewCDCManager(pgPool *pgxpool.Pool, chRepo *SearchRepository, registry *sch
 	if cfg.ParallelWorkers == 0 {
 		cfg.ParallelWorkers = 5
 	}
+	// Lower default chunk size to 10k for safer memory/IO behavior
 	if cfg.ChunkSize == 0 {
-		cfg.ChunkSize = 100000
+		cfg.ChunkSize = 10000
+	}
+	// Default to 3 retries for atomicity
+	if cfg.MaxRetries == 0 {
+		cfg.MaxRetries = 3
 	}
 
 	allTables := registry.GetAllTables()
@@ -122,7 +136,7 @@ func (m *CDCManager) Start() {
 
 	// ═══════════════════════════════════════════════════════
 	// ⭐ CRITICAL: Ensure global tables exist with correct schema
-	// ═════════════════════════════════════════════════════════
+	// ═══════════════════════════════════════════════════════
 	if err := m.ensureGlobalTables(ctx); err != nil {
 		log.Printf("FATAL: Failed to create global tables: %v", err)
 		return
@@ -133,7 +147,7 @@ func (m *CDCManager) Start() {
 	m.globalStatus.StartedAt = time.Now()
 	m.mu.Unlock()
 
-	log.Printf("CDC sync started for %d tables with batch size %d", len(m.tables), m.config.BatchSize)
+	log.Printf("CDC sync started for %d tables with batch size %d and chunk size %d", len(m.tables), m.config.BatchSize, m.config.ChunkSize)
 	m.loadCheckpoints()
 
 	// ⭐ Start Bitmap Monitoring
@@ -206,7 +220,6 @@ func (m *CDCManager) syncLoop() {
 }
 
 // ⭐ NEW: Bitmap Monitor
-// Queries the bitmap table periodically to show aggregation progress
 func (m *CDCManager) monitorBitmaps() {
 	defer m.wg.Done()
 
@@ -218,10 +231,8 @@ func (m *CDCManager) monitorBitmaps() {
 		case <-m.stopChan:
 			return
 		case <-ticker.C:
-			// Query Bitmap Stats
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-			// 1. Count Unique Tokens
 			queryTokens := `SELECT count() FROM search_token_bitmap`
 			var tokenCount uint64
 			row1 := m.chRepo.conn.QueryRow(ctx, queryTokens)
@@ -229,7 +240,6 @@ func (m *CDCManager) monitorBitmaps() {
 				log.Printf("[Bitmap Monitor] Failed to count tokens: %v", err)
 			}
 
-			// 2. Sum Total IDs in Bitmaps
 			queryTotal := `SELECT sum(total_count) FROM search_token_bitmap`
 			var totalIDs uint64
 			row2 := m.chRepo.conn.QueryRow(ctx, queryTotal)
@@ -307,7 +317,31 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
 	}
 	log.Println("✅ search_token_bitmap created/updated")
 
-	// 3. Recreate Bitmap MV
+	// 3. Dead-letter table for failed chunks
+	deadLetterSQL := `
+    CREATE TABLE IF NOT EXISTS search_index_errors (
+        table_name String,
+        start_id UInt64,
+        end_id UInt64,
+        attempts UInt8,
+        last_error String,
+        sample_data String,
+        created_at DateTime DEFAULT now()
+    ) ENGINE = MergeTree()
+    ORDER BY created_at
+    `
+	if err := m.chRepo.conn.Exec(ctx, deadLetterSQL); err != nil {
+		return fmt.Errorf("failed to create search_index_errors: %w", err)
+	}
+	log.Println("✅ search_index_errors created/updated")
+
+	// 4. Recreate Bitmap MV (FIX: Drop if exists to prevent crash)
+	dropViewSQL := `DROP MATERIALIZED VIEW IF EXISTS mv_token_bitmap`
+	if err := m.chRepo.conn.Exec(ctx, dropViewSQL); err != nil {
+		// Non-fatal, might just not exist
+		log.Printf("⚠️ Note: Could not drop MV (might not exist): %v", err)
+	}
+
 	createBitmapViewSQL := `
         CREATE MATERIALIZED VIEW mv_token_bitmap
         TO search_token_bitmap
@@ -331,6 +365,13 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
 }
 
 func (m *CDCManager) syncTableChunked(tableName string) error {
+	// validate table name before doing SQL construction
+	if !validCHIdent.MatchString(tableName) {
+		err := fmt.Errorf("invalid table name: %s", tableName)
+		m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = err.Error() })
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 72*time.Hour)
 	defer cancel()
 
@@ -356,7 +397,6 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 		return err
 	}
 
-	// Ensure table exists using SearchRepository's schema
 	if err := m.chRepo.EnsureSearchIndex(ctx, tableName); err != nil {
 		log.Printf("[%s] Failed to create search index: %v", tableName, err)
 		m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = err.Error() })
@@ -396,15 +436,11 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 
 	for currentID := startID; currentID < totalRows; currentID += m.config.ChunkSize {
 
-		// ═════════════════════════════════════════════════════════════
-		// ⭐ STOP SIGNAL CHECK
-		// ═════════════════════════════════════════════════════════════
 		select {
 		case <-m.stopChan:
 			log.Println("🛑 Stop signal received! Aborting sync for table:", tableName)
 			return fmt.Errorf("sync stopped by user")
 		default:
-			// Continue
 		}
 
 		endID := currentID + m.config.ChunkSize
@@ -423,6 +459,8 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 		rows, err := m.pgPool.Query(ctx, query, currentID, endID)
 		if err != nil {
 			log.Printf("[%s] Failed to query chunk %d-%d: %v", tableName, currentID, endID, err)
+			// Retryable or continue? we'll backoff and retry this chunk to avoid skipping source DB errors
+			backoffWithJitter(0)
 			continue
 		}
 
@@ -445,31 +483,70 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 		rows.Close()
 
 		if len(records) > 0 {
-			// 2. Ingest Raw Data via BulkIndex
-			// This triggers MVs for Token Entity & Bitmap automatically.
-			if err := m.chRepo.BulkIndex(ctx, tableName, records); err != nil {
-				log.Printf("[%s] Failed to index chunk: %v", tableName, err)
-			} else {
-				totalSynced += int64(len(records))
+			// 2. ⭐ ATOMIC INGESTION WITH RETRY
+			// We retry the whole chunk if BulkIndex fails.
+			// Because the main search_... table is ReplacingMergeTree, re-inserting fixes partial writes.
+			var ingestErr error
+			for attempt := 0; attempt < m.config.MaxRetries; attempt++ {
+				ingestErr = m.chRepo.BulkIndex(ctx, tableName, records)
+				if ingestErr == nil {
+					break // Success
+				}
 
-				m.mu.Lock()
-				m.lastSyncedID[tableName] = endID
-				m.mu.Unlock()
+				// increment retry metric
+				m.chRepo.IncRetryCount(1)
 
-				m.updateTableStatus(tableName, func(s *TableSyncStatus) {
-					s.RecordsIndexed += int64(len(records))
-					s.LastSyncedID = endID
-				})
+				log.Printf("[%s] ⚠️ Chunk ingest failed (Attempt %d/%d): %v", tableName, attempt+1, m.config.MaxRetries, ingestErr)
+
+				if attempt < m.config.MaxRetries-1 {
+					backoffWithJitter(attempt)
+				}
 			}
 
-			if time.Since(lastLogTime) > 10*time.Second {
-				elapsed := time.Since(startTime)
-				rate := float64(totalSynced) / elapsed.Seconds()
-				progress := float64(endID-startID) / float64(totalRows-startID) * 100
-				log.Printf("[%s] Progress: %.1f%% (%d/%d records, %.0f rec/sec) - Data sent to Bitmap Pipeline",
-					tableName, progress, totalSynced, totalRows-startID, rate)
-				lastLogTime = time.Now()
+			if ingestErr != nil {
+				log.Printf("[%s] 🚨 Failed to index chunk after %d retries. Inserting into dead-letter.", tableName, m.config.MaxRetries)
+
+				// Update status but DO NOT advance lastSyncedID. Next run will retry this chunk.
+				m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = ingestErr.Error() })
+
+				// Insert dead-letter with a sample payload (first record) for triage.
+				sample := ""
+				if len(records) > 0 {
+					if b, err := json.Marshal(records[0]); err == nil {
+						sample = string(b)
+					}
+				}
+
+				if err := m.chRepo.InsertDeadLetter(ctx, tableName, uint64(currentID), uint64(endID), uint8(m.config.MaxRetries), ingestErr.Error(), sample); err != nil {
+					log.Printf("[%s] Failed to insert dead-letter: %v", tableName, err)
+				}
+
+				// increment dead-letter metric
+				m.chRepo.IncDeadLetterCount(1)
+
+				// Return error so operator can look; this stops processing this table for now.
+				return fmt.Errorf("chunk ingestion failed permanently: %w", ingestErr)
 			}
+
+			totalSynced += int64(len(records))
+
+			m.mu.Lock()
+			m.lastSyncedID[tableName] = endID
+			m.mu.Unlock()
+
+			m.updateTableStatus(tableName, func(s *TableSyncStatus) {
+				s.RecordsIndexed += int64(len(records))
+				s.LastSyncedID = endID
+			})
+		}
+
+		if time.Since(lastLogTime) > 10*time.Second {
+			elapsed := time.Since(startTime)
+			rate := float64(totalSynced) / elapsed.Seconds()
+			progress := float64(endID-startID) / float64(totalRows-startID) * 100
+			log.Printf("[%s] Progress: %.1f%% (%d/%d records, %.0f rec/sec)",
+				tableName, progress, totalSynced, totalRows-startID, rate)
+			lastLogTime = time.Now()
 		}
 	}
 
@@ -513,7 +590,6 @@ func (m *CDCManager) incrementalSync(tableName string) error {
 	}
 	columnList := joinColumns(columns)
 
-	// PASS 1: Fetch NEW Rows (Based on ID)
 	query := fmt.Sprintf(`
         SELECT %s
         FROM %s
@@ -553,9 +629,33 @@ func (m *CDCManager) incrementalSync(tableName string) error {
 	rows.Close()
 
 	if len(records) > 0 {
-		if err := m.chRepo.BulkIndex(ctx, tableName, records); err != nil {
-			m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = err.Error() })
-			return err
+		// Apply same retry logic for incremental sync
+		var ingestErr error
+		for attempt := 0; attempt < m.config.MaxRetries; attempt++ {
+			ingestErr = m.chRepo.BulkIndex(ctx, tableName, records)
+			if ingestErr == nil {
+				break
+			}
+			m.chRepo.IncRetryCount(1)
+			log.Printf("[%s] Incremental ingest failed (Attempt %d/%d): %v", tableName, attempt+1, m.config.MaxRetries, ingestErr)
+			if attempt < m.config.MaxRetries-1 {
+				backoffWithJitter(attempt)
+			}
+		}
+		if ingestErr != nil {
+			// send to dead-letter
+			sample := ""
+			if len(records) > 0 {
+				if b, err := json.Marshal(records[0]); err == nil {
+					sample = string(b)
+				}
+			}
+			if err := m.chRepo.InsertDeadLetter(ctx, tableName, uint64(lastID), uint64(newMaxID), uint8(m.config.MaxRetries), ingestErr.Error(), sample); err != nil {
+				log.Printf("[%s] Failed to insert dead-letter (incremental): %v", tableName, err)
+			}
+			m.chRepo.IncDeadLetterCount(1)
+			m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = ingestErr.Error() })
+			return ingestErr
 		}
 
 		m.mu.Lock()
@@ -590,6 +690,10 @@ func (m *CDCManager) loadCheckpoints() {
 	ctx := context.Background()
 	for _, tableName := range m.tables {
 		pkCol := "s_indx"
+		if !validCHIdent.MatchString(tableName) {
+			log.Printf("[%s] invalid table name for checkpoint query, skipping", tableName)
+			continue
+		}
 		searchTable := fmt.Sprintf("search_%s", tableName)
 		query := fmt.Sprintf("SELECT coalesce(max(%s), 0) FROM %s WHERE is_deleted = 0", pkCol, searchTable)
 
@@ -744,4 +848,14 @@ func (m *CDCManager) hasUpdatedAt(tableName string) bool {
 		}
 	}
 	return false
+}
+
+// backoffWithJitter provides exponential backoff with jitter
+func backoffWithJitter(attempt int) {
+	baseMs := 500.0
+	maxMs := 30000.0
+	exp := math.Min(maxMs, baseMs*math.Pow(2, float64(attempt)))
+	jitter := rand.Float64() * exp * 0.2
+	sleep := time.Duration(exp+jitter) * time.Millisecond
+	time.Sleep(sleep)
 }

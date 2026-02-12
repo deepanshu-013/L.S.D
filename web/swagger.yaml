@@ -7,6 +7,7 @@ info:
     
     ## Key Features
     - 🔥 **Hybrid Search Engine**: ClickHouse (10-100x faster) + PostgreSQL fallback
+    - 🎯 **TF-IDF Scoring**: Intelligent relevance ranking for multi-term queries
     - ⚡ **Smart Caching**: Redis-backed with 5-minute TTL
     - 📄 **Cursor Pagination**: Efficient for billions of rows
     - 🔍 **Parallel Search**: Sub-second multi-table queries
@@ -26,6 +27,12 @@ info:
     - **Redis**: High-speed caching layer
     - **Go**: High-performance backend (1.21+)
     
+    ## Use Cases
+    - CRM data warehouses
+    - Customer analytics platforms
+    - Large-scale data lakes
+    - Real-time business intelligence
+    - Multi-tenant SaaS applications
 
 servers:
   - url: http://localhost:5000
@@ -373,6 +380,117 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+  /api/search/optimized:
+    get:
+      tags:
+        - Search
+      summary: TF-IDF Optimized Global Search
+      description: |
+        High-performance globally fair search with **Term Frequency-Inverse Document Frequency (TF-IDF)** scoring.
+        
+        ## Algorithm: TF-IDF Ranking
+        
+        This endpoint uses dynamic relevance scoring to ensure records matching **all** search terms 
+        (e.g., "Yashank Sharma") are ranked higher than records matching only **partial** terms (e.g., "Sharma").
+        
+        ### How It Works
+        
+        1. **Tokenization**: Query split into individual terms
+           - Example: `"yashank sharma"` → `['yashank', 'sharma']`
+        
+        2. **Global Statistics**: System analyzes term frequency across entire database
+           - Rare terms (e.g., "yashank"): ~50 matches → High weight (~0.19)
+           - Common terms (e.g., "sharma"): ~500,000 matches → Low weight (~0.00002)
+        
+        3. **Scoring Formula**: 
+           ```
+           Weight(term) = 10 / (Total_Matches + 1)
+           Score(record) = Σ Weight(term) for all matching terms
+           ```
+        
+        4. **Multi-level Sorting**:
+           - **Primary**: Relevance Score (DESC) - Most relevant first
+           - **Secondary**: Updated At (DESC) - Freshest records first
+           - **Tertiary**: Table Name (ASC) - Fair distribution across tables
+        
+        ### Example: "yashank sharma"
+        
+        - **Record A**: "Yashank Sharma" 
+          - Matches: yashank (0.19) + sharma (0.00002)
+          - **Score**: ~0.19 → **Rank #1**
+        
+        - **Record B**: "Rahul Sharma"
+          - Matches: sharma (0.00002)
+          - **Score**: ~0.00002 → **Rank #100**
+        
+        ### Key Features
+        - ✅ **Multi-term prioritization**: Full matches outrank partial matches
+        - ✅ **Rarity boost**: Rare terms contribute more to score
+        - ✅ **Table fairness**: Results distributed evenly across tables
+        - ✅ **Freshness factor**: Recent updates prioritized
+        - ✅ **Stable pagination**: Cursor-based for consistent results
+        
+        ### Aggregations
+        
+        - **Page Aggregations** (`aggregations`): Counts on current page
+        - **Global Aggregations** (`global_aggregations`): Total matches in database
+        
+        ### Use Cases
+        - Search-as-you-type with intelligent ranking
+        - Multi-word name searches (first + last name)
+        - Finding rare entities among common terms
+        - Fair cross-table result distribution
+      operationId: optimizedSearch
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: TF-IDF scored search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OptimizedSearchResults'
+              examples:
+                multi_word_search:
+                  summary: Multi-word search with TF-IDF scoring
+                  value:
+                    results:
+                      angel:
+                        - name: "Yashank Sharma"
+                          s_indx: 12345
+                          updated_at: "2026-01-30T11:14:35Z"
+                          _score: 19.001
+                        - name: "Rahul Sharma"
+                          s_indx: 67890
+                          updated_at: "2026-01-29T10:20:15Z"
+                          _score: 1.0
+                      b2b:
+                        - first_name: "Yash"
+                          last_name: "Sharma"
+                          s_indx: 98765
+                          updated_at: "2026-01-31T15:30:00Z"
+                          _score: 19.001
+                    total_results: 25
+                    aggregations:
+                      angel: 15
+                      b2b: 10
+                    global_aggregations:
+                      angel: 156156
+                      b2b: 53819
+                    total_tables_matched: 2
+                    has_more: true
+                    next_cursor: "eyJsYXN0X2lkIjoiOTg3NjUiLCJsYXN0X3VwZGF0ZWRfYXQiOiIyMDI2LTAxLTMxVDE1OjMwOjAwWiJ9"
+                    scoring_strategy: "Term Frequency (TF-IDF)"
+                    scoring_details:
+                      logic: "Records scored by number of matching tokens. Rare terms (yashank) get ~19 points, common terms (sharma) get ~1 point."
+                      dynamic_weights: "Weight per token: 10 / (Total Matches + 1) to prioritize rarity. Boost applied to known tables."
+                      sorting: "1. Score DESC, 2. Updated_at DESC, 3. Table_name ASC"
+                    search_time: 245
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
   # ==================== PIPELINE ENDPOINTS ====================
   
   /api/pipeline/start:
@@ -585,7 +703,7 @@ components:
     Limit:
       name: limit
       in: query
-      description: Number of records per page
+      description: Number of records per page (max 100)
       schema:
         type: integer
         default: 20
@@ -596,7 +714,7 @@ components:
     Cursor:
       name: cursor
       in: query
-      description: Pagination cursor from previous response
+      description: Base64 encoded pagination cursor from previous response
       schema:
         type: string
       example: eyJsYXN0X2lkIjoiMTkyNDQyMDEifQ==
@@ -623,12 +741,12 @@ components:
       name: q
       in: query
       required: true
-      description: Search term (2-100 characters)
+      description: Search term (2-100 characters). Supports multi-word queries.
       schema:
         type: string
         minLength: 2
         maxLength: 100
-      example: rahul
+      example: yashank sharma
     
     SearchColumns:
       name: columns
@@ -711,6 +829,7 @@ components:
             - GET /api/info
             - GET /api/tables
             - GET /api/search
+            - GET /api/search/optimized
 
     TableList:
       type: object
@@ -994,6 +1113,82 @@ components:
           type: boolean
           example: true
 
+    OptimizedSearchResults:
+      type: object
+      properties:
+        results:
+          type: object
+          description: Results grouped by table, sorted by TF-IDF score
+          additionalProperties:
+            type: array
+            items:
+              allOf:
+                - $ref: '#/components/schemas/Record'
+                - type: object
+                  properties:
+                    _score:
+                      type: number
+                      format: float
+                      description: TF-IDF relevance score for this record
+                      example: 19.001
+        total_results:
+          type: integer
+          description: Total number of results on current page
+          example: 25
+        aggregations:
+          type: object
+          description: Count of results on current page per table
+          additionalProperties:
+            type: integer
+          example:
+            angel: 15
+            b2b: 10
+        global_aggregations:
+          type: object
+          description: Total count of matching records in entire database per table
+          additionalProperties:
+            type: integer
+          example:
+            angel: 156156
+            b2b: 53819
+        total_tables_matched:
+          type: integer
+          description: Number of tables with at least one match
+          example: 2
+        has_more:
+          type: boolean
+          description: Whether more results are available on next page
+          example: true
+        next_cursor:
+          type: string
+          nullable: true
+          description: Base64 encoded cursor for next page
+          example: eyJsYXN0X2lkIjoiOTg3NjUiLCJsYXN0X3VwZGF0ZWRfYXQiOiIyMDI2LTAxLTMxVDE1OjMwOjAwWiJ9
+        scoring_strategy:
+          type: string
+          description: Algorithm used for relevance scoring
+          example: Term Frequency (TF-IDF)
+        scoring_details:
+          type: object
+          description: Detailed breakdown of scoring algorithm
+          properties:
+            logic:
+              type: string
+              description: High-level explanation of scoring logic
+              example: Records scored by number of matching tokens. Rare terms (yashank) get ~19 points, common terms (sharma) get ~1 point.
+            dynamic_weights:
+              type: string
+              description: Mathematical formula for weight calculation
+              example: Weight per token = 10 / (Total Matches + 1) to prioritize rarity. Boost applied to known tables.
+            sorting:
+              type: string
+              description: Multi-level sorting strategy
+              example: "1. Score DESC, 2. Updated_at DESC, 3. Table_name ASC"
+        search_time:
+          type: integer
+          description: Query execution time in milliseconds
+          example: 245
+
     PipelineJobRequest:
       type: object
       required:
@@ -1187,8 +1382,3 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: JWT bearer token (not yet implemented)
-
-# Currently no security is implemented
-# security:
-#   - ApiKeyAuth: []
-#   - BearerAuth: []

@@ -27,21 +27,28 @@ func NewConnection(cfg Config) (*Connection, error) {
 	}
 
 	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{cfg.Addr},
+		Addr: []string{cfg.Addr}, // Keeps your old way of handling address
 		Auth: clickhouse.Auth{
 			Database: cfg.Database,
 			Username: cfg.Username,
 			Password: cfg.Password,
 		},
 		Settings: clickhouse.Settings{
-			"max_execution_time":                         60,
-			"max_memory_usage":                           10000000000, // 10GB
-			"max_threads":                                16,
-			"use_uncompressed_cache":                     1,
-			"allow_experimental_projection_optimization": 1,
+			"max_execution_time":     60,
+			"max_memory_usage":       34359738368, // Updated to 32GB for 2TB scale
+			"max_threads":            0,           // Auto detect (0)
+			"use_uncompressed_cache": 1,
+
+			// ⭐ NEW: Async Insert Performance Settings
+			"async_insert":                 1,       // Enable Async Inserts
+			"wait_for_async_insert":        0,       // Fire and Forget (0ms wait)
+			"async_insert_max_data_size":   1048576, // 1MB Buffer
+			"async_insert_busy_timeout_ms": 1000,    // Flush after 1s max
+
+			"allow_experimental_projection_optimization": 1, // Enable Projection Speedup
 		},
 		DialTimeout:     5 * time.Second,
-		MaxOpenConns:    20,
+		MaxOpenConns:    20, // Connection Pool
 		MaxIdleConns:    10,
 		ConnMaxLifetime: time.Hour,
 		Compression: &clickhouse.Compression{

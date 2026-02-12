@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"highperf-api/internal/schema"
 	"log"
 	"strings"
 	"sync"
 	"time"
 
-	"highperf-api/internal/schema"
-
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -24,7 +24,6 @@ type CDCConfig struct {
 type CDCManager struct {
 	pgPool       *pgxpool.Pool
 	chRepo       *SearchRepository
-	entityRepo   *EntityRepository
 	registry     *schema.SchemaRegistry
 	config       CDCConfig
 	stopChan     chan struct{}
@@ -65,7 +64,7 @@ type CDCEvent struct {
 
 func NewCDCManager(pgPool *pgxpool.Pool, chRepo *SearchRepository, registry *schema.SchemaRegistry, cfg CDCConfig) *CDCManager {
 	if cfg.BatchSize <= 0 {
-		cfg.BatchSize = 10000
+		cfg.BatchSize = 100000
 	}
 	if cfg.SyncInterval <= 0 {
 		cfg.SyncInterval = 30 * time.Second
@@ -90,12 +89,9 @@ func NewCDCManager(pgPool *pgxpool.Pool, chRepo *SearchRepository, registry *sch
 		tableStatus[t] = &TableSyncStatus{TableName: t}
 	}
 
-	entityRepo := NewEntityRepository(chRepo.conn)
-
 	return &CDCManager{
 		pgPool:       pgPool,
 		chRepo:       chRepo,
-		entityRepo:   entityRepo,
 		registry:     registry,
 		config:       cfg,
 		stopChan:     make(chan struct{}),
@@ -123,11 +119,13 @@ func (m *CDCManager) Start() {
 	}
 
 	ctx := context.Background()
-	if m.entityRepo != nil {
-		if err := m.entityRepo.Initialize(ctx); err != nil {
-			log.Printf("⚠️  Entity layers not created (continuing without): %v", err)
-			m.entityRepo = nil
-		}
+
+	// ═══════════════════════════════════════════════════════
+	// ⭐ CRITICAL: Ensure global tables exist with correct schema
+	// ═════════════════════════════════════════════════════════
+	if err := m.ensureGlobalTables(ctx); err != nil {
+		log.Printf("FATAL: Failed to create global tables: %v", err)
+		return
 	}
 
 	m.mu.Lock()
@@ -137,6 +135,12 @@ func (m *CDCManager) Start() {
 
 	log.Printf("CDC sync started for %d tables with batch size %d", len(m.tables), m.config.BatchSize)
 	m.loadCheckpoints()
+
+	// ⭐ Start Bitmap Monitoring
+	m.wg.Add(1)
+	go m.monitorBitmaps()
+
+	// ⭐ Start Data Sync
 	m.wg.Add(1)
 	go m.syncLoop()
 }
@@ -201,6 +205,47 @@ func (m *CDCManager) syncLoop() {
 	}
 }
 
+// ⭐ NEW: Bitmap Monitor
+// Queries the bitmap table periodically to show aggregation progress
+func (m *CDCManager) monitorBitmaps() {
+	defer m.wg.Done()
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		case <-ticker.C:
+			// Query Bitmap Stats
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+			// 1. Count Unique Tokens
+			queryTokens := `SELECT count() FROM search_token_bitmap`
+			var tokenCount uint64
+			row1 := m.chRepo.conn.QueryRow(ctx, queryTokens)
+			if err := row1.Scan(&tokenCount); err != nil {
+				log.Printf("[Bitmap Monitor] Failed to count tokens: %v", err)
+			}
+
+			// 2. Sum Total IDs in Bitmaps
+			queryTotal := `SELECT sum(total_count) FROM search_token_bitmap`
+			var totalIDs uint64
+			row2 := m.chRepo.conn.QueryRow(ctx, queryTotal)
+			if err := row2.Scan(&totalIDs); err != nil {
+				log.Printf("[Bitmap Monitor] Failed to sum IDs: %v", err)
+			}
+
+			cancel()
+
+			if tokenCount > 0 || totalIDs > 0 {
+				log.Printf("📊 [Bitmap Monitor] Tokens: %d | Tracked IDs: %d", tokenCount, totalIDs)
+			}
+		}
+	}
+}
+
 func (m *CDCManager) parallelInitialSync() {
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, m.config.ParallelWorkers)
@@ -221,45 +266,67 @@ func (m *CDCManager) parallelInitialSync() {
 	wg.Wait()
 }
 
-func (m *CDCManager) ensureSearchTable(tableName string) error {
-	searchTableName := fmt.Sprintf("search_%s", tableName)
+// ⭐ UPDATED SCHEMA MANAGER
+func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
+	log.Println("🛠️ Ensuring global tables exist (Schema: Global ID + Table Name)...")
 
-	checkQuery := fmt.Sprintf("EXISTS TABLE %s", searchTableName)
-	var exists uint8
-	row := m.chRepo.conn.QueryRow(context.Background(), checkQuery)
-	if err := row.Scan(&exists); err == nil && exists == 1 {
-		log.Printf("[%s] ClickHouse search table already exists", tableName)
-		return nil
+	// 1. Token Entity Table
+	entityTableSQL := `
+        CREATE TABLE IF NOT EXISTS search_token_entity (
+            token_hash UInt64,
+            token LowCardinality(String),
+            global_id UInt64, 
+            table_name LowCardinality(String),
+            updated_at DateTime
+        ) ENGINE = ReplacingMergeTree(updated_at)
+        PARTITION BY toYYYYMM(updated_at)
+        ORDER BY (token_hash, global_id)
+        SETTINGS index_granularity = 16384
+    `
+	if err := m.chRepo.conn.Exec(ctx, entityTableSQL); err != nil {
+		return fmt.Errorf("failed to create search_token_entity: %w", err)
 	}
+	log.Println("✅ search_token_entity created/updated")
 
-	query := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			id String,
-			table_name String DEFAULT '%s',
-			search_text String,
-			original_data String CODEC(ZSTD(3)),
-			is_deleted UInt8 DEFAULT 0,
-			synced_at DateTime DEFAULT now(),
-			updated_at DateTime DEFAULT now(),
-			
-			INDEX idx_search_bloom search_text TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 4,
-			INDEX idx_id_minmax id TYPE minmax GRANULARITY 4,
-			INDEX idx_date_minmax updated_at TYPE minmax GRANULARITY 1
-		) ENGINE = MergeTree()
-		PARTITION BY toYYYYMM(updated_at)
-		ORDER BY (is_deleted, updated_at, id)
-		SETTINGS
-			index_granularity = 8192,
-			index_granularity_bytes = 10485760,
-			compress_marks = 1,
-			compress_primary_key = 1
-	`, searchTableName, tableName)
-
-	if err := m.chRepo.conn.Exec(context.Background(), query); err != nil {
-		return fmt.Errorf("failed to create table: %w", err)
+	// 2. Token Bitmap Table
+	bitmapTableSQL := `
+        CREATE TABLE IF NOT EXISTS search_token_bitmap (
+            token_hash UInt64,
+            token LowCardinality(String),
+            table_name LowCardinality(String),
+            ids_bitmap AggregateFunction(groupBitmap, UInt64),
+            updated_at DateTime,
+            total_count UInt64
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(updated_at)
+        ORDER BY (token_hash, token, table_name)
+        SETTINGS index_granularity = 8192
+    `
+	if err := m.chRepo.conn.Exec(ctx, bitmapTableSQL); err != nil {
+		return fmt.Errorf("failed to create search_token_bitmap: %w", err)
 	}
+	log.Println("✅ search_token_bitmap created/updated")
 
-	log.Printf("[%s] ✅ Optimized ClickHouse search table created", tableName)
+	// 3. Recreate Bitmap MV
+	createBitmapViewSQL := `
+        CREATE MATERIALIZED VIEW mv_token_bitmap
+        TO search_token_bitmap
+        AS
+        SELECT
+            token_hash,
+            groupBitmapState(global_id) as ids_bitmap,
+            max(updated_at) as updated_at,
+            bitmapCardinality(groupBitmapState(global_id)) as total_count,
+            token, 
+            table_name 
+        FROM search_token_entity
+        GROUP BY token_hash, token, table_name;
+    `
+	if err := m.chRepo.conn.Exec(ctx, createBitmapViewSQL); err != nil {
+		return fmt.Errorf("failed to create mv_token_bitmap: %w", err)
+	}
+	log.Println("✅ mv_token_bitmap created/updated")
+
 	return nil
 }
 
@@ -289,16 +356,16 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 		return err
 	}
 
-	log.Printf("[%s] Using primary key column: %s", tableName, pkCol)
-
+	// Ensure table exists using SearchRepository's schema
 	if err := m.chRepo.EnsureSearchIndex(ctx, tableName); err != nil {
 		log.Printf("[%s] Failed to create search index: %v", tableName, err)
 		m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = err.Error() })
 		return err
 	}
 
+	// Get Max ID for progress tracking
 	var totalRows int64
-	countQuery := fmt.Sprintf("SELECT COALESCE(MAX(%s), 0) FROM %s", pkCol, tableName)
+	countQuery := fmt.Sprintf("SELECT COALESCE(MAX(%s), 0) FROM %s", pkCol, pgx.Identifier{tableName}.Sanitize())
 	if err := m.pgPool.QueryRow(ctx, countQuery).Scan(&totalRows); err != nil {
 		log.Printf("[%s] Failed to get max ID: %v", tableName, err)
 	}
@@ -328,17 +395,30 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 	lastLogTime := time.Now()
 
 	for currentID := startID; currentID < totalRows; currentID += m.config.ChunkSize {
+
+		// ═════════════════════════════════════════════════════════════
+		// ⭐ STOP SIGNAL CHECK
+		// ═════════════════════════════════════════════════════════════
+		select {
+		case <-m.stopChan:
+			log.Println("🛑 Stop signal received! Aborting sync for table:", tableName)
+			return fmt.Errorf("sync stopped by user")
+		default:
+			// Continue
+		}
+
 		endID := currentID + m.config.ChunkSize
 		if endID > totalRows {
 			endID = totalRows
 		}
 
+		// 1. Fetch Data from Postgres
 		query := fmt.Sprintf(`
-			SELECT %s
-			FROM %s
-			WHERE %s > $1 AND %s <= $2
-			ORDER BY %s
-		`, columnList, tableName, pkCol, pkCol, pkCol)
+            SELECT %s
+            FROM %s
+            WHERE %s > $1 AND %s <= $2
+            ORDER BY %s
+        `, columnList, pgx.Identifier{tableName}.Sanitize(), pkCol, pkCol, pkCol)
 
 		rows, err := m.pgPool.Query(ctx, query, currentID, endID)
 		if err != nil {
@@ -347,8 +427,6 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 		}
 
 		var records []map[string]interface{}
-		var entities []*Entity
-
 		for rows.Next() {
 			values, err := rows.Values()
 			if err != nil {
@@ -363,27 +441,16 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 			}
 
 			records = append(records, record)
-
-			if m.entityRepo != nil && m.entityRepo.IsEnabled() {
-				pkValue := fmt.Sprintf("%v", record[pkCol])
-				entity := m.entityRepo.ExtractEntity(tableName, pkValue, record)
-				entities = append(entities, entity)
-			}
 		}
-
 		rows.Close()
 
 		if len(records) > 0 {
+			// 2. Ingest Raw Data via BulkIndex
+			// This triggers MVs for Token Entity & Bitmap automatically.
 			if err := m.chRepo.BulkIndex(ctx, tableName, records); err != nil {
 				log.Printf("[%s] Failed to index chunk: %v", tableName, err)
 			} else {
 				totalSynced += int64(len(records))
-
-				if len(entities) > 0 && m.entityRepo != nil {
-					if err := m.entityRepo.BulkIndexEntities(ctx, entities); err != nil {
-						log.Printf("[%s] Failed to index entities: %v", tableName, err)
-					}
-				}
 
 				m.mu.Lock()
 				m.lastSyncedID[tableName] = endID
@@ -399,7 +466,7 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 				elapsed := time.Since(startTime)
 				rate := float64(totalSynced) / elapsed.Seconds()
 				progress := float64(endID-startID) / float64(totalRows-startID) * 100
-				log.Printf("[%s] Progress: %.1f%% (%d/%d records, %.0f rec/sec)",
+				log.Printf("[%s] Progress: %.1f%% (%d/%d records, %.0f rec/sec) - Data sent to Bitmap Pipeline",
 					tableName, progress, totalSynced, totalRows-startID, rate)
 				lastLogTime = time.Now()
 			}
@@ -421,8 +488,7 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 }
 
 func (m *CDCManager) incrementalSync(tableName string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+	ctx := context.Background()
 
 	table := m.registry.GetTable(tableName)
 	if table == nil {
@@ -445,22 +511,22 @@ func (m *CDCManager) incrementalSync(tableName string) error {
 	for _, col := range table.Columns {
 		columns = append(columns, col.Name)
 	}
-
 	columnList := joinColumns(columns)
+
+	// PASS 1: Fetch NEW Rows (Based on ID)
 	query := fmt.Sprintf(`
-		SELECT %s
-		FROM %s
-		WHERE %s > $1
-		ORDER BY %s
-		LIMIT $2
-	`, columnList, tableName, pkCol, pkCol)
+        SELECT %s
+        FROM %s
+        WHERE %s > $1
+        ORDER BY %s
+        LIMIT $2
+    `, columnList, pgx.Identifier{tableName}.Sanitize(), pkCol, pkCol)
 
 	rows, err := m.pgPool.Query(ctx, query, lastID, m.config.BatchSize)
 	if err != nil {
 		m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = err.Error() })
 		return err
 	}
-	defer rows.Close()
 
 	var records []map[string]interface{}
 	var newMaxID int64
@@ -470,7 +536,6 @@ func (m *CDCManager) incrementalSync(tableName string) error {
 		if err != nil {
 			continue
 		}
-
 		record := make(map[string]interface{})
 		for i, col := range table.Columns {
 			if i < len(values) {
@@ -483,9 +548,9 @@ func (m *CDCManager) incrementalSync(tableName string) error {
 				newMaxID = id
 			}
 		}
-
 		records = append(records, record)
 	}
+	rows.Close()
 
 	if len(records) > 0 {
 		if err := m.chRepo.BulkIndex(ctx, tableName, records); err != nil {
@@ -496,9 +561,6 @@ func (m *CDCManager) incrementalSync(tableName string) error {
 		m.mu.Lock()
 		m.lastSyncedID[tableName] = newMaxID
 		m.mu.Unlock()
-
-		log.Printf("[%s] Incremental sync: %d new records (last %s: %d)",
-			tableName, len(records), pkCol, newMaxID)
 
 		m.updateTableStatus(tableName, func(s *TableSyncStatus) {
 			s.RecordsIndexed += int64(len(records))
@@ -527,22 +589,22 @@ func (m *CDCManager) getPrimaryKeyColumn(tableName string) (string, error) {
 func (m *CDCManager) loadCheckpoints() {
 	ctx := context.Background()
 	for _, tableName := range m.tables {
-		pkCol, err := m.getPrimaryKeyColumn(tableName)
-		if err != nil {
-			log.Printf("[%s] Skipping checkpoint: %v", tableName, err)
-			continue
-		}
-
+		pkCol := "s_indx"
 		searchTable := fmt.Sprintf("search_%s", tableName)
-		query := fmt.Sprintf("SELECT max(toInt64(id)) FROM %s WHERE is_deleted = 0", searchTable)
+		query := fmt.Sprintf("SELECT coalesce(max(%s), 0) FROM %s WHERE is_deleted = 0", pkCol, searchTable)
 
-		var maxID int64
+		var maxID uint64
 		row := m.chRepo.conn.QueryRow(ctx, query)
+
 		if err := row.Scan(&maxID); err == nil && maxID > 0 {
 			m.mu.Lock()
-			m.lastSyncedID[tableName] = maxID
+			m.lastSyncedID[tableName] = int64(maxID)
 			m.mu.Unlock()
 			log.Printf("[%s] Resuming from %s: %d", tableName, pkCol, maxID)
+		} else {
+			if err != nil {
+				log.Printf("[%s] Checkpoint query failed: %v (Table might be empty or missing)", tableName, err)
+			}
 		}
 	}
 }
@@ -666,6 +728,20 @@ func (m *CDCManager) TriggerTableSync(tableName string) error {
 	return nil
 }
 
-func (m *CDCManager) GetEntityRepository() *EntityRepository {
-	return m.entityRepo
+func (m *CDCManager) GetEntityRepository() interface{} {
+	return nil
+}
+
+func (m *CDCManager) hasUpdatedAt(tableName string) bool {
+	table := m.registry.GetTable(tableName)
+	if table == nil {
+		return false
+	}
+
+	for _, col := range table.Columns {
+		if col.Name == "updated_at" {
+			return true
+		}
+	}
+	return false
 }

@@ -698,28 +698,46 @@ func (m *CDCManager) getPrimaryKeyColumn(tableName string) (string, error) {
 
 func (m *CDCManager) loadCheckpoints() {
 	ctx := context.Background()
+
 	for _, tableName := range m.tables {
-		pkCol := "s_indx"
-		if !validCHIdent.MatchString(tableName) {
-			log.Printf("[%s] invalid table name for checkpoint query, skipping", tableName)
+
+		if tableName == "" {
 			continue
 		}
-		searchTable := fmt.Sprintf("search_%s", pgx.Identifier{tableName}.Sanitize())
 
-		query := fmt.Sprintf("SELECT coalesce(max(%s), 0) FROM %s WHERE is_deleted = 0", pkCol, searchTable)
+		if !validCHIdent.MatchString(tableName) {
+			log.Printf("Skipping invalid table name in checkpoint: %s", tableName)
+			continue
+		}
+
+		searchTable := fmt.Sprintf("search_%s", tableName)
+
+		// Check if table exists
+		checkQuery := `
+            SELECT count()
+            FROM system.tables
+            WHERE database = currentDatabase()
+        	AND name = ?`
+		var exists uint64
+		row := m.chRepo.conn.QueryRow(ctx, checkQuery, searchTable)
+		if err := row.Scan(&exists); err != nil || exists == 0 {
+			// Table does not exist yet — skip silently
+			continue
+		}
+
+		query := fmt.Sprintf(
+			"SELECT coalesce(max(s_indx), 0) FROM %s WHERE is_deleted = 0",
+			searchTable,
+		)
 
 		var maxID uint64
-		row := m.chRepo.conn.QueryRow(ctx, query)
+		row = m.chRepo.conn.QueryRow(ctx, query)
 
 		if err := row.Scan(&maxID); err == nil && maxID > 0 {
 			m.mu.Lock()
 			m.lastSyncedID[tableName] = int64(maxID)
 			m.mu.Unlock()
-			log.Printf("[%s] Resuming from %s: %d", tableName, pkCol, maxID)
-		} else {
-			if err != nil {
-				log.Printf("[%s] Checkpoint query failed: %v (Table might be empty or missing)", tableName, err)
-			}
+			log.Printf("[%s] Resuming from s_indx: %d", tableName, maxID)
 		}
 	}
 }

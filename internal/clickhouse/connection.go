@@ -20,6 +20,27 @@ type Config struct {
 	Username string
 	Password string
 }
+type nullRow struct {
+	err error
+}
+
+func (r *nullRow) Scan(dest ...interface{}) error {
+	if r.err != nil {
+		return r.err
+	}
+	return fmt.Errorf("no row available")
+}
+
+func (r *nullRow) ScanStruct(dest interface{}) error {
+	if r.err != nil {
+		return r.err
+	}
+	return fmt.Errorf("no row available")
+}
+
+func (r *nullRow) Err() error {
+	return r.err
+}
 
 func NewConnection(cfg Config) (*Connection, error) {
 	if cfg.Addr == "" {
@@ -81,7 +102,7 @@ func (c *Connection) Query(ctx context.Context, query string, args ...interface{
 
 func (c *Connection) QueryRow(ctx context.Context, query string, args ...interface{}) driver.Row {
 	if !c.available {
-		return nil
+		return &nullRow{err: fmt.Errorf("clickhouse not available")}
 	}
 	return c.conn.QueryRow(ctx, query, args...)
 }

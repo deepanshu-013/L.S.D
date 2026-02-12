@@ -361,27 +361,26 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 	// 4. Send token batches sequentially (each is small)
 	for i, tBatch := range pendingTokenBatches {
 		tokenBatch, err := r.conn.PrepareBatch(ctx, `
-            INSERT INTO search_token_entity (token_hash, token, global_id, updated_at, table_name)
-        `)
+        INSERT INTO search_token_entity (token_hash, token, global_id, updated_at, table_name)
+    `)
 		if err != nil {
 			return fmt.Errorf("failed to prepare token batch #%d: %w", i, err)
 		}
-		// ensure abort in case of error
-		abortOnErr := true
+
 		for _, te := range tBatch {
 			if err := tokenBatch.Append(te.tokenHash, te.token, te.globalID, te.updatedAt, te.tableName); err != nil {
 				_ = tokenBatch.Abort()
 				return fmt.Errorf("failed to append to token batch #%d: %w", i, err)
 			}
 		}
+
 		if err := tokenBatch.Send(); err != nil {
 			_ = tokenBatch.Abort()
-			return fmt.Errorf("token batch #%d send failed (Atomicity Violation): %w", i, err)
+			return fmt.Errorf("token batch #%d send failed: %w", i, err)
 		}
-		if abortOnErr {
-			// best-effort abort to free resources; Send is successful so Abort should be noop
-			_ = tokenBatch.Abort()
-		}
+
+		// safe cleanup
+		_ = tokenBatch.Abort()
 	}
 
 	duration := time.Since(startTime)

@@ -335,14 +335,22 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
 	}
 	log.Println("✅ search_index_errors created/updated")
 
-	// 4. Recreate Bitmap MV (FIX: Drop if exists to prevent crash)
-	dropViewSQL := `DROP MATERIALIZED VIEW IF EXISTS mv_token_bitmap`
-	if err := m.chRepo.conn.Exec(ctx, dropViewSQL); err != nil {
-		// Non-fatal, might just not exist
-		log.Printf("⚠️ Note: Could not drop MV (might not exist): %v", err)
+	// 4. Ensure MV exists (idempotent, no blind drop)
+
+	checkMVQuery := `
+    	SELECT count()
+    	FROM system.tables
+    	WHERE database = currentDatabase()
+    	  AND name = 'mv_token_bitmap'`
+
+	var mvCount uint64
+	row := m.chRepo.conn.QueryRow(ctx, checkMVQuery)
+	if err := row.Scan(&mvCount); err != nil {
+		return fmt.Errorf("failed to check mv existence: %w", err)
 	}
 
-	createBitmapViewSQL := `
+	if mvCount == 0 {
+		createBitmapViewSQL := `
         CREATE MATERIALIZED VIEW mv_token_bitmap
         TO search_token_bitmap
         AS
@@ -356,11 +364,13 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
         FROM search_token_entity
         GROUP BY token_hash, token, table_name;
     `
-	if err := m.chRepo.conn.Exec(ctx, createBitmapViewSQL); err != nil {
-		return fmt.Errorf("failed to create mv_token_bitmap: %w", err)
+		if err := m.chRepo.conn.Exec(ctx, createBitmapViewSQL); err != nil {
+			return fmt.Errorf("failed to create mv_token_bitmap: %w", err)
+		}
+		log.Println("✅ mv_token_bitmap created")
+	} else {
+		log.Println("ℹ️ mv_token_bitmap already exists, skipping creation")
 	}
-	log.Println("✅ mv_token_bitmap created/updated")
-
 	return nil
 }
 
@@ -694,7 +704,8 @@ func (m *CDCManager) loadCheckpoints() {
 			log.Printf("[%s] invalid table name for checkpoint query, skipping", tableName)
 			continue
 		}
-		searchTable := fmt.Sprintf("search_%s", tableName)
+		searchTable := fmt.Sprintf("search_%s", pgx.Identifier{tableName}.Sanitize())
+
 		query := fmt.Sprintf("SELECT coalesce(max(%s), 0) FROM %s WHERE is_deleted = 0", pkCol, searchTable)
 
 		var maxID uint64

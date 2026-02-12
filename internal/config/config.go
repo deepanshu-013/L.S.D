@@ -51,7 +51,7 @@ func LoadConfig() *Config {
 	// wait_for_async_insert=0: Don't wait for disk, return immediately (Fastest CDC)
 	// ═══════════════════════════════════════════════════════════
 	cfg.ClickHouseDSN = fmt.Sprintf(
-		"tcp://%s?database=%s&username=%s&password=%s&async_insert=1&wait_for_async_insert=0",
+		"tcp://%s?database=%s&username=%s&password=%s&async_insert=1&wait_for_async_insert=1",
 		addr,
 		cfg.ClickHouseDB,
 		cfg.ClickHouseUser,

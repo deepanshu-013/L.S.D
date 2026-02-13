@@ -505,6 +505,8 @@ func (r *SearchRepository) BulkIndexTokens(ctx context.Context, tableName string
 // ⭐ MAIN SEARCH FUNCTION: INFINITE SCROLL (Search-After Pattern)
 // search_repository.go
 
+// search_repository.go
+
 func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTerm string, limit int, cursor string) (*SearchResult, error) {
     searchTerm = strings.ToLower(strings.TrimSpace(searchTerm))
     tokens := strings.Fields(searchTerm)
@@ -522,52 +524,74 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
     // 2. Decode Cursor
     c, _ := unmarshalCursor(cursor)
 
-    // 3. Construct Bitmap Expression
-    // OPTIMIZATION: We select from the global table. 
-    // No LIMIT 1 needed. No merging multiple tables needed. It's pre-merged.
-    var bitmapExpression string
-
+    // 3. Construct Bitmap Query
+    // We use a WITH clause to make it cleaner and safer.
+    // 'res' will be a Bitmap object.
+    var bitmapQuery string
+    
     if len(tokenHashes) == 1 {
-        // Select the pre-merged global bitmap
-        bitmapExpression = fmt.Sprintf(
-            "(SELECT groupBitmapMerge(ids_bitmap) FROM search_token_bitmap WHERE token_hash = %d)",
-            tokenHashes[0],
-        )
+        bitmapQuery = fmt.Sprintf(`
+            SELECT ids_bitmap 
+            FROM search_token_bitmap 
+            WHERE token_hash = %d 
+            LIMIT 1
+        `, tokenHashes[0])
     } else {
-        // Intersection logic
-        var selectors []string
-        for _, hash := range tokenHashes {
-            selectors = append(selectors, fmt.Sprintf(
-                "(SELECT groupBitmapMerge(ids_bitmap) FROM search_token_bitmap WHERE token_hash = %d)",
-                hash,
+        // For multiple tokens, we must intersect.
+        // We use groupBitmapMerge on the filtered table, then bitmapAnd.
+        var views []string
+        for i, hash := range tokenHashes {
+            views = append(views, fmt.Sprintf(
+                // We select the merged bitmap for this specific hash
+                "(SELECT groupBitmapMerge(ids_bitmap) FROM search_token_bitmap WHERE token_hash = %d) as b%d",
+                hash, i,
             ))
         }
+        
+        // Join them: SELECT bitmapAnd(b0, bitmapAnd(b1, b2))
+        intersection := "b0"
+        for i := 1; i < len(views); i++ {
+            intersection = fmt.Sprintf("bitmapAnd(%s, b%d)", intersection, i)
+        }
+        
+        bitmapQuery = fmt.Sprintf("SELECT %s FROM (SELECT %s)", intersection, strings.Join(views, ", "))
+    }
 
-        bitmapExpression = selectors[0]
-        for i := 1; i < len(selectors); i++ {
-            bitmapExpression = fmt.Sprintf("bitmapAnd(%s, %s)", bitmapExpression, selectors[i])
+    // 4. Final Query with Cursor
+    // We wrap the result in ifNull to handle empty searches gracefully.
+    finalQuery := fmt.Sprintf(`
+        SELECT arrayJoin(bitmapToArray(ifNull(
+            (%s),
+            bitmapBuild(emptyArrayUInt64())
+        ))) as global_id
+    `, bitmapQuery)
+
+    // Add Cursor Logic
+    var whereClause string
+    if c.LastGlobalID != "" {
+        parsedID, err := strconv.ParseUint(c.LastGlobalID, 10, 64)
+        if err == nil {
+            whereClause = fmt.Sprintf(" WHERE global_id < %d", parsedID)
         }
     }
 
-    // 4. Query
-    var whereClause string
-    if c.LastGlobalID != "" {
-        parsedID, _ := strconv.ParseUint(c.LastGlobalID, 10, 64)
-        whereClause = fmt.Sprintf("WHERE global_id < %d", parsedID)
-    }
-
+    // Apply Limit + 1 for pagination check
     query := fmt.Sprintf(`
-        SELECT arrayJoin(bitmapToArray(%s)) as global_id
+        SELECT global_id FROM (
+            %s
+        ) 
         %s
         ORDER BY global_id DESC
         LIMIT %d
-    `, bitmapExpression, whereClause, limit+1)
+    `, finalQuery, whereClause, limit+1)
 
-	rows, err := r.conn.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("bitmap query failed: %w", err)
-	}
-	defer rows.Close()
+    rows, err := r.conn.Query(ctx, query)
+    if err != nil {
+        return nil, fmt.Errorf("bitmap query failed: %w", err)
+    }
+    defer rows.Close()
+
+    // ... (Rest of the function remains the same: collect IDs, resolve tables, fetch data) ...
 
 	// 5. Collect IDs
 	var globalIDs []uint64

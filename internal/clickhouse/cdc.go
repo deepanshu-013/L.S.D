@@ -277,101 +277,64 @@ func (m *CDCManager) parallelInitialSync() {
 }
 
 // ⭐ UPDATED SCHEMA MANAGER
+// CDC.go
+
 func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
-	log.Println("🛠️ Ensuring global tables exist (Schema: Global ID + Table Name)...")
+    log.Println("🛠️ Upgrading Global Tables: Pre-Merged Bitmaps Architecture...")
 
-	// 1. Token Entity Table
-	entityTableSQL := `
-        CREATE TABLE IF NOT EXISTS search_token_entity (
-            token_hash UInt64,
-            token LowCardinality(String),
-            global_id UInt64, 
-            table_name LowCardinality(String),
-            updated_at DateTime
-        ) ENGINE = ReplacingMergeTree(updated_at)
-        PARTITION BY toYYYYMM(updated_at)
-        ORDER BY (token_hash, global_id)
-        SETTINGS index_granularity = 16384
-    `
-	if err := m.chRepo.conn.Exec(ctx, entityTableSQL); err != nil {
-		return fmt.Errorf("failed to create search_token_entity: %w", err)
-	}
-	log.Println("✅ search_token_entity created/updated")
+    // 1. Drop old MV and Tables to ensure clean slate (Data will re-sync from CDC)
+    // In production, you might handle migrations, but for 16k tables, a rebuild is cleaner.
+    _ = m.chRepo.conn.Exec(ctx, "DROP TABLE IF EXISTS mv_token_bitmap")
+    _ = m.chRepo.conn.Exec(ctx, "DROP TABLE IF EXISTS search_token_bitmap")
+    _ = m.chRepo.conn.Exec(ctx, "DROP TABLE IF EXISTS search_token_stats")
+    // We also drop entity table because we will bypass it for direct inserts
+    _ = m.chRepo.conn.Exec(ctx, "DROP TABLE IF EXISTS search_token_entity")
 
-	// 2. Token Bitmap Table
-	bitmapTableSQL := `
+    // 2. Create Global Bitmap Table (One row per Token globally)
+    // We use a simpler key: just token_hash.
+    bitmapTableSQL := `
         CREATE TABLE IF NOT EXISTS search_token_bitmap (
             token_hash UInt64,
             token LowCardinality(String),
-            table_name LowCardinality(String),
             ids_bitmap AggregateFunction(groupBitmap, UInt64),
-            updated_at DateTime,
-            total_count UInt64
+            updated_at DateTime DEFAULT now()
         ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(updated_at)
-        ORDER BY (token_hash, token, table_name)
+        ORDER BY (token_hash)
         SETTINGS index_granularity = 8192
     `
-	if err := m.chRepo.conn.Exec(ctx, bitmapTableSQL); err != nil {
-		return fmt.Errorf("failed to create search_token_bitmap: %w", err)
-	}
-	log.Println("✅ search_token_bitmap created/updated")
+    if err := m.chRepo.conn.Exec(ctx, bitmapTableSQL); err != nil {
+        return fmt.Errorf("failed to create search_token_bitmap: %w", err)
+    }
+    log.Println("✅ search_token_bitmap (Global Scope) created")
 
-	// 3. Dead-letter table for failed chunks
-	deadLetterSQL := `
+    // 3. Create Stats Table (For UI Aggregations)
+    // This replaces the need to scan bitmaps to count table matches.
+    statsTableSQL := `
+        CREATE TABLE IF NOT EXISTS search_token_stats (
+            token_hash UInt64,
+            table_name LowCardinality(String),
+            count UInt64,
+            updated_at DateTime DEFAULT now()
+        ) ENGINE = SummingMergeTree()
+        ORDER BY (token_hash, table_name)
+        SETTINGS index_granularity = 8192
+    `
+    if err := m.chRepo.conn.Exec(ctx, statsTableSQL); err != nil {
+        return fmt.Errorf("failed to create search_token_stats: %w", err)
+    }
+    log.Println("✅ search_token_stats created")
+
+    // 4. Dead-letter table
+    deadLetterSQL := `
     CREATE TABLE IF NOT EXISTS search_index_errors (
-        table_name String,
-        start_id UInt64,
-        end_id UInt64,
-        attempts UInt8,
-        last_error String,
-        sample_data String,
-        created_at DateTime DEFAULT now()
-    ) ENGINE = MergeTree()
-    ORDER BY created_at
-    `
-	if err := m.chRepo.conn.Exec(ctx, deadLetterSQL); err != nil {
-		return fmt.Errorf("failed to create search_index_errors: %w", err)
-	}
-	log.Println("✅ search_index_errors created/updated")
+        table_name String, start_id UInt64, end_id UInt64, attempts UInt8,
+        last_error String, sample_data String, created_at DateTime DEFAULT now()
+    ) ENGINE = MergeTree() ORDER BY created_at`
+    if err := m.chRepo.conn.Exec(ctx, deadLetterSQL); err != nil {
+        return fmt.Errorf("failed to create search_index_errors: %w", err)
+    }
 
-	// 4. Ensure MV exists (idempotent, no blind drop)
-
-	checkMVQuery := `
-    	SELECT count()
-    	FROM system.tables
-    	WHERE database = currentDatabase()
-    	  AND name = 'mv_token_bitmap'`
-
-	var mvCount uint64
-	row := m.chRepo.conn.QueryRow(ctx, checkMVQuery)
-	if err := row.Scan(&mvCount); err != nil {
-		return fmt.Errorf("failed to check mv existence: %w", err)
-	}
-
-	if mvCount == 0 {
-		createBitmapViewSQL := `
-        CREATE MATERIALIZED VIEW mv_token_bitmap
-        TO search_token_bitmap
-        AS
-        SELECT
-            token_hash,
-            groupBitmapState(global_id) as ids_bitmap,
-            max(updated_at) as updated_at,
-            bitmapCardinality(groupBitmapState(global_id)) as total_count,
-            token, 
-            table_name 
-        FROM search_token_entity
-        GROUP BY token_hash, token, table_name;
-    `
-		if err := m.chRepo.conn.Exec(ctx, createBitmapViewSQL); err != nil {
-			return fmt.Errorf("failed to create mv_token_bitmap: %w", err)
-		}
-		log.Println("✅ mv_token_bitmap created")
-	} else {
-		log.Println("ℹ️ mv_token_bitmap already exists, skipping creation")
-	}
-	return nil
+    return nil
 }
 
 func (m *CDCManager) syncTableChunked(tableName string) error {

@@ -137,12 +137,12 @@ func (r *SearchRepository) getGlobalStatsFromHashes(hashes []uint64) map[string]
         return make(map[string]uint64)
     }
 
-    // Use the lightweight stats table instead of calculating from bitmaps
     hashList := make([]string, len(hashes))
     for i, h := range hashes {
         hashList[i] = fmt.Sprintf("%d", h)
     }
 
+    // Use the stats table for fast UI counts
     query := fmt.Sprintf(`
         SELECT table_name, sum(count) as count
         FROM search_token_stats
@@ -223,6 +223,8 @@ func (r *SearchRepository) EnsureSearchIndex(ctx context.Context, tableName stri
 // The caller (CDCManager) is responsible for retrying the whole chunk.
 // search_repository.go
 
+// search_repository.go
+
 func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, records []map[string]interface{}) error {
     if !r.IsAvailable() || len(records) == 0 {
         return nil
@@ -258,16 +260,18 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
     }
     defer func() { _ = batch.Abort() }()
 
-    // 2. Token Batches (Direct to Global Tables)
-    // We use -State functions to insert partial aggregates that ClickHouse merges later.
-    bitmapBatch, err := r.conn.PrepareBatch(ctx, `
-        INSERT INTO search_token_bitmap (token_hash, token, ids_bitmap, updated_at)
+    // 2. Token Stream Batch (Simple Types)
+    // Inserts into search_token_entity. MV handles the Bitmap aggregation.
+    tokenBatch, err := r.conn.PrepareBatch(ctx, `
+        INSERT INTO search_token_entity (token_hash, token, global_id, table_name, updated_at)
     `)
     if err != nil {
-        return fmt.Errorf("failed to prepare bitmap batch: %w", err)
+        return fmt.Errorf("failed to prepare token batch: %w", err)
     }
-    defer func() { _ = bitmapBatch.Abort() }()
+    defer func() { _ = tokenBatch.Abort() }()
 
+    // 3. Stats Batch (Simple Types)
+    // Directly increments counters in search_token_stats.
     statsBatch, err := r.conn.PrepareBatch(ctx, `
         INSERT INTO search_token_stats (token_hash, table_name, count, updated_at)
     `)
@@ -278,10 +282,6 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 
     tableID := r.getTableIDDeterministic(tableName)
     now := time.Now()
-
-    // Deduplication map for tokens within this batch (to avoid double counting stats for the same record)
-    // key: token_hash, value: true
-    tokenBatchCache := make(map[uint64]bool)
 
     for _, record := range records {
         pkValueRaw, ok := record[pkCol]
@@ -296,10 +296,9 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 
         global_id := generateCompactGlobalID(tableID, s_indx)
 
-        // --- Main Table ---
         searchText := r.extractSearchableText(record, table)
         tokens := strings.Fields(searchText)
-        
+
         var updatedAt time.Time
         if val, ok := record["updated_at"].(time.Time); ok {
             updatedAt = val
@@ -317,54 +316,46 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 
         originalData, _ := json.Marshal(record)
 
+        // Append Main
         if err := batch.Append(s_indx, global_id, string(originalData), isDeleted, now, updatedAt); err != nil {
             return fmt.Errorf("failed to append main batch: %w", err)
         }
 
-        // --- Global Bitmap & Stats Ingestion ---
-        // Clear cache for this record
-        for k := range tokenBatchCache {
-            delete(tokenBatchCache, k)
-        }
+        // Process Tokens
+        // Use a local cache to dedup tokens within the same record (so "error error" counts as 1 stat)
+        seenTokens := make(map[uint64]bool)
 
         for _, token := range tokens {
             if len(token) < 2 {
                 continue
             }
             
-            tokenHash := hashToken(token)
             tokenLower := strings.ToLower(token)
+            tokenHash := hashToken(tokenLower)
 
-            // 1. Insert into Global Bitmap
-            // We create a bitmap state containing just this single ID.
-            // ClickHouse will merge this with the existing bitmap for this token.
-            // 'bitmapBuild([id])' creates the state.
-            if err := bitmapBatch.Append(tokenHash, tokenLower, fmt.Sprintf("bitmapBuild([%d])", global_id), now); err != nil {
-                // Log or ignore bitmap errors to prevent main data loss, or return if strict
-                log.Printf("warn: failed to append bitmap token: %v", err)
+            // 1. Insert into Token Stream (triggers MV)
+            if err := tokenBatch.Append(tokenHash, tokenLower, global_id, tableName, now); err != nil {
+                // Log warning but usually continue
+                log.Printf("warn: failed token append: %v", err)
             }
 
-            // 2. Insert into Stats (once per token per record)
-            if !tokenBatchCache[tokenHash] {
-                tokenBatchCache[tokenHash] = true
+            // 2. Insert into Stats (if not seen in this record)
+            if !seenTokens[tokenHash] {
+                seenTokens[tokenHash] = true
                 if err := statsBatch.Append(tokenHash, tableName, 1, now); err != nil {
-                    log.Printf("warn: failed to append stats token: %v", err)
+                    log.Printf("warn: failed stats append: %v", err)
                 }
             }
         }
     }
 
-    // Send Main Data
+    // Send all batches
     if err := batch.Send(); err != nil {
         return fmt.Errorf("main batch send failed: %w", err)
     }
-
-    // Send Bitmap Data (Asynchronous merge happens in CH)
-    if err := bitmapBatch.Send(); err != nil {
-        return fmt.Errorf("bitmap batch send failed: %w", err)
+    if err := tokenBatch.Send(); err != nil {
+        return fmt.Errorf("token batch send failed: %w", err)
     }
-
-    // Send Stats Data
     if err := statsBatch.Send(); err != nil {
         return fmt.Errorf("stats batch send failed: %w", err)
     }
@@ -537,7 +528,7 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
     var bitmapExpression string
 
     if len(tokenHashes) == 1 {
-        // Directly select the pre-merged bitmap
+        // Select the pre-merged global bitmap
         bitmapExpression = fmt.Sprintf(
             "(SELECT groupBitmapMerge(ids_bitmap) FROM search_token_bitmap WHERE token_hash = %d)",
             tokenHashes[0],
@@ -552,7 +543,6 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
             ))
         }
 
-        // Nest the bitmapAnd
         bitmapExpression = selectors[0]
         for i := 1; i < len(selectors); i++ {
             bitmapExpression = fmt.Sprintf("bitmapAnd(%s, %s)", bitmapExpression, selectors[i])

@@ -279,19 +279,13 @@ func (m *CDCManager) parallelInitialSync() {
 // ⭐ UPDATED SCHEMA MANAGER
 // CDC.go
 
+// CDC.go
+
 func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
-    log.Println("🛠️ Upgrading Global Tables: Pre-Merged Bitmaps Architecture...")
+    log.Println("🛠️ Ensuring global tables (Stream + MV Architecture)...")
 
-    // 1. Drop old MV and Tables to ensure clean slate (Data will re-sync from CDC)
-    // In production, you might handle migrations, but for 16k tables, a rebuild is cleaner.
-    _ = m.chRepo.conn.Exec(ctx, "DROP TABLE IF EXISTS mv_token_bitmap")
-    _ = m.chRepo.conn.Exec(ctx, "DROP TABLE IF EXISTS search_token_bitmap")
-    _ = m.chRepo.conn.Exec(ctx, "DROP TABLE IF EXISTS search_token_stats")
-    // We also drop entity table because we will bypass it for direct inserts
-    _ = m.chRepo.conn.Exec(ctx, "DROP TABLE IF EXISTS search_token_entity")
-
-    // 2. Create Global Bitmap Table (One row per Token globally)
-    // We use a simpler key: just token_hash.
+    // 1. Global Bitmap Table (Target)
+    // One row per Token. Stores the pre-merged bitmap of ALL IDs.
     bitmapTableSQL := `
         CREATE TABLE IF NOT EXISTS search_token_bitmap (
             token_hash UInt64,
@@ -305,10 +299,9 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
     if err := m.chRepo.conn.Exec(ctx, bitmapTableSQL); err != nil {
         return fmt.Errorf("failed to create search_token_bitmap: %w", err)
     }
-    log.Println("✅ search_token_bitmap (Global Scope) created")
 
-    // 3. Create Stats Table (For UI Aggregations)
-    // This replaces the need to scan bitmaps to count table matches.
+    // 2. Stats Table (For UI Aggregations)
+    // Tracks how many times a token appears in each table.
     statsTableSQL := `
         CREATE TABLE IF NOT EXISTS search_token_stats (
             token_hash UInt64,
@@ -322,9 +315,46 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
     if err := m.chRepo.conn.Exec(ctx, statsTableSQL); err != nil {
         return fmt.Errorf("failed to create search_token_stats: %w", err)
     }
-    log.Println("✅ search_token_stats created")
 
-    // 4. Dead-letter table
+    // 3. Token Stream Table (The Ingestion Buffer)
+    // We insert simple rows here. The MV moves data from here to the Bitmap table.
+    // We add a TTL to keep this table small (data is instantly moved to bitmap).
+    streamTableSQL := `
+        CREATE TABLE IF NOT EXISTS search_token_entity (
+            token_hash UInt64,
+            token LowCardinality(String),
+            global_id UInt64,
+            table_name LowCardinality(String),
+            updated_at DateTime DEFAULT now()
+        ) ENGINE = MergeTree()
+        ORDER BY (token_hash, global_id)
+        TTL updated_at INTERVAL 1 DAY DELETE
+        SETTINGS index_granularity = 8192
+    `
+    if err := m.chRepo.conn.Exec(ctx, streamTableSQL); err != nil {
+        return fmt.Errorf("failed to create search_token_entity: %w", err)
+    }
+
+    // 4. Materialized View (The Magic)
+    // It reads from 'search_token_entity' and aggregates into 'search_token_bitmap'.
+    // Note: GROUP BY only token_hash (Global Scope).
+    mvSQL := `
+        CREATE MATERIALIZED VIEW IF NOT EXISTS mv_token_bitmap
+        TO search_token_bitmap
+        AS
+        SELECT
+            token_hash,
+            token,
+            groupBitmapState(global_id) as ids_bitmap,
+            max(updated_at) as updated_at
+        FROM search_token_entity
+        GROUP BY token_hash, token
+    `
+    if err := m.chRepo.conn.Exec(ctx, mvSQL); err != nil {
+        return fmt.Errorf("failed to create mv_token_bitmap: %w", err)
+    }
+
+    // 5. Dead Letter Table
     deadLetterSQL := `
     CREATE TABLE IF NOT EXISTS search_index_errors (
         table_name String, start_id UInt64, end_id UInt64, attempts UInt8,
@@ -334,6 +364,7 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
         return fmt.Errorf("failed to create search_index_errors: %w", err)
     }
 
+    log.Println("✅ Global tables created (Stream -> MV -> Bitmap)")
     return nil
 }
 

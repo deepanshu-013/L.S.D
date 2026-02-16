@@ -150,9 +150,9 @@ func (m *CDCManager) Start() {
 	log.Printf("CDC sync started for %d tables with batch size %d and chunk size %d", len(m.tables), m.config.BatchSize, m.config.ChunkSize)
 	m.loadCheckpoints()
 
-	// ⭐ Start Bitmap Monitoring
-	m.wg.Add(1)
-	go m.monitorBitmaps()
+	// // ⭐ Start Bitmap Monitoring
+	// m.wg.Add(1)
+	// go m.monitorBitmaps()
 
 	// ⭐ Start Data Sync
 	m.wg.Add(1)
@@ -219,42 +219,42 @@ func (m *CDCManager) syncLoop() {
 	}
 }
 
-// ⭐ NEW: Bitmap Monitor
-func (m *CDCManager) monitorBitmaps() {
-	defer m.wg.Done()
+// // ⭐ NEW: Bitmap Monitor
+// func (m *CDCManager) monitorBitmaps() {
+// 	defer m.wg.Done()
 
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+// 	ticker := time.NewTicker(30 * time.Second)
+// 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-m.stopChan:
-			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// 	for {
+// 		select {
+// 		case <-m.stopChan:
+// 			return
+// 		case <-ticker.C:
+// 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-			queryTokens := `SELECT count() FROM search_token_bitmap`
-			var tokenCount uint64
-			row1 := m.chRepo.conn.QueryRow(ctx, queryTokens)
-			if err := row1.Scan(&tokenCount); err != nil {
-				log.Printf("[Bitmap Monitor] Failed to count tokens: %v", err)
-			}
+// 			queryTokens := `SELECT count() FROM search_token_bitmap`
+// 			var tokenCount uint64
+// 			row1 := m.chRepo.conn.QueryRow(ctx, queryTokens)
+// 			if err := row1.Scan(&tokenCount); err != nil {
+// 				log.Printf("[Bitmap Monitor] Failed to count tokens: %v", err)
+// 			}
 
-			queryTotal := `SELECT sum(total_count) FROM search_token_bitmap`
-			var totalIDs uint64
-			row2 := m.chRepo.conn.QueryRow(ctx, queryTotal)
-			if err := row2.Scan(&totalIDs); err != nil {
-				log.Printf("[Bitmap Monitor] Failed to sum IDs: %v", err)
-			}
+// 			queryTotal := `SELECT sum(total_count) FROM search_token_bitmap`
+// 			var totalIDs uint64
+// 			row2 := m.chRepo.conn.QueryRow(ctx, queryTotal)
+// 			if err := row2.Scan(&totalIDs); err != nil {
+// 				log.Printf("[Bitmap Monitor] Failed to sum IDs: %v", err)
+// 			}
 
-			cancel()
+// 			cancel()
 
-			if tokenCount > 0 || totalIDs > 0 {
-				log.Printf("📊 [Bitmap Monitor] Tokens: %d | Tracked IDs: %d", tokenCount, totalIDs)
-			}
-		}
-	}
-}
+// 			if tokenCount > 0 || totalIDs > 0 {
+// 				log.Printf("📊 [Bitmap Monitor] Tokens: %d | Tracked IDs: %d", tokenCount, totalIDs)
+// 			}
+// 		}
+// 	}
+// }
 
 func (m *CDCManager) parallelInitialSync() {
 	var wg sync.WaitGroup
@@ -289,10 +289,10 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
 	// 1. Drop existing tables to clear old schema/data
 	// We must drop MVs first, then tables.
 	dropStatements := []string{
-		"DROP TABLE IF EXISTS mv_token_bitmap",
-		"DROP TABLE IF EXISTS search_token_bitmap",
-		"DROP TABLE IF EXISTS search_token_stats",
-		"DROP TABLE IF EXISTS search_token_entity", // Clean up legacy table
+		// "DROP TABLE IF EXISTS mv_token_bitmap",
+		// "DROP TABLE IF EXISTS search_token_bitmap",
+		// "DROP TABLE IF EXISTS search_token_stats",
+		// "DROP TABLE IF EXISTS search_token_entity", // Clean up legacy table
 	}
 
 	for _, stmt := range dropStatements {

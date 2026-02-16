@@ -70,12 +70,6 @@ type SearchResult struct {
 
 	// Stats for CURRENT PAGE (Visible results)
 	Aggregations map[string]int `json:"aggregations"`
-
-	// Stats for GLOBAL DATABASE (All matches)
-	GlobalAggregations map[string]uint64 `json:"global_aggregations"`
-
-	// Count of tables that have data globally
-	TotalTablesMatched int `json:"total_tables_matched"`
 }
 
 type SearchParams struct {
@@ -133,38 +127,38 @@ func uint64SliceToStrings(ids []uint64) []string {
 // search_repository.go
 
 func (r *SearchRepository) getGlobalStatsFromHashes(hashes []uint64) map[string]uint64 {
-    if len(hashes) == 0 {
-        return make(map[string]uint64)
-    }
+	if len(hashes) == 0 {
+		return make(map[string]uint64)
+	}
 
-    hashList := make([]string, len(hashes))
-    for i, h := range hashes {
-        hashList[i] = fmt.Sprintf("%d", h)
-    }
+	hashList := make([]string, len(hashes))
+	for i, h := range hashes {
+		hashList[i] = fmt.Sprintf("%d", h)
+	}
 
-    // Use the stats table for fast UI counts
-    query := fmt.Sprintf(`
+	// Use the stats table for fast UI counts
+	query := fmt.Sprintf(`
         SELECT table_name, sum(count) as count
         FROM search_token_stats
         WHERE token_hash IN (%s)
         GROUP BY table_name
     `, strings.Join(hashList, ","))
 
-    rows, err := r.conn.Query(context.Background(), query)
-    if err != nil {
-        return make(map[string]uint64)
-    }
-    defer rows.Close()
+	rows, err := r.conn.Query(context.Background(), query)
+	if err != nil {
+		return make(map[string]uint64)
+	}
+	defer rows.Close()
 
-    stats := make(map[string]uint64)
-    for rows.Next() {
-        var t string
-        var count uint64
-        if rows.Scan(&t, &count) == nil {
-            stats[t] = count
-        }
-    }
-    return stats
+	stats := make(map[string]uint64)
+	for rows.Next() {
+		var t string
+		var count uint64
+		if rows.Scan(&t, &count) == nil {
+			stats[t] = count
+		}
+	}
+	return stats
 }
 
 func (r *SearchRepository) IsAvailable() bool {
@@ -226,146 +220,146 @@ func (r *SearchRepository) EnsureSearchIndex(ctx context.Context, tableName stri
 // search_repository.go
 
 func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, records []map[string]interface{}) error {
-    if !r.IsAvailable() || len(records) == 0 {
-        return nil
-    }
+	if !r.IsAvailable() || len(records) == 0 {
+		return nil
+	}
 
-    if err := validateTableName(tableName); err != nil {
-        return fmt.Errorf("invalid table name: %w", err)
-    }
+	if err := validateTableName(tableName); err != nil {
+		return fmt.Errorf("invalid table name: %w", err)
+	}
 
-    if err := r.EnsureSearchIndex(ctx, tableName); err != nil {
-        return fmt.Errorf("failed to ensure search index: %w", err)
-    }
+	if err := r.EnsureSearchIndex(ctx, tableName); err != nil {
+		return fmt.Errorf("failed to ensure search index: %w", err)
+	}
 
-    table := r.registry.GetTable(tableName)
-    if table == nil {
-        return fmt.Errorf("table not found: %s", tableName)
-    }
+	table := r.registry.GetTable(tableName)
+	if table == nil {
+		return fmt.Errorf("table not found: %s", tableName)
+	}
 
-    pkCol := "id"
-    if len(table.PrimaryKey) > 0 {
-        pkCol = table.PrimaryKey[0]
-    }
+	pkCol := "id"
+	if len(table.PrimaryKey) > 0 {
+		pkCol = table.PrimaryKey[0]
+	}
 
-    indexTableName := fmt.Sprintf("search_%s", tableName)
-    startTime := time.Now()
+	indexTableName := fmt.Sprintf("search_%s", tableName)
+	startTime := time.Now()
 
-    // 1. Main Data Batch
-    batch, err := r.conn.PrepareBatch(ctx, fmt.Sprintf(`
+	// 1. Main Data Batch
+	batch, err := r.conn.PrepareBatch(ctx, fmt.Sprintf(`
         INSERT INTO %s (s_indx, global_id, original_data, is_deleted, synced_at, updated_at)
     `, indexTableName))
-    if err != nil {
-        return fmt.Errorf("failed to prepare batch: %w", err)
-    }
-    defer func() { _ = batch.Abort() }()
+	if err != nil {
+		return fmt.Errorf("failed to prepare batch: %w", err)
+	}
+	defer func() { _ = batch.Abort() }()
 
-    // 2. Token Stream Batch (Simple Types)
-    // Inserts into search_token_entity. MV handles the Bitmap aggregation.
-    tokenBatch, err := r.conn.PrepareBatch(ctx, `
+	// 2. Token Stream Batch (Simple Types)
+	// Inserts into search_token_entity. MV handles the Bitmap aggregation.
+	tokenBatch, err := r.conn.PrepareBatch(ctx, `
         INSERT INTO search_token_entity (token_hash, token, global_id, table_name, updated_at)
     `)
-    if err != nil {
-        return fmt.Errorf("failed to prepare token batch: %w", err)
-    }
-    defer func() { _ = tokenBatch.Abort() }()
+	if err != nil {
+		return fmt.Errorf("failed to prepare token batch: %w", err)
+	}
+	defer func() { _ = tokenBatch.Abort() }()
 
-    // 3. Stats Batch (Simple Types)
-    // Directly increments counters in search_token_stats.
-    statsBatch, err := r.conn.PrepareBatch(ctx, `
+	// 3. Stats Batch (Simple Types)
+	// Directly increments counters in search_token_stats.
+	statsBatch, err := r.conn.PrepareBatch(ctx, `
         INSERT INTO search_token_stats (token_hash, table_name, count, updated_at)
     `)
-    if err != nil {
-        return fmt.Errorf("failed to prepare stats batch: %w", err)
-    }
-    defer func() { _ = statsBatch.Abort() }()
+	if err != nil {
+		return fmt.Errorf("failed to prepare stats batch: %w", err)
+	}
+	defer func() { _ = statsBatch.Abort() }()
 
-    tableID := r.getTableIDDeterministic(tableName)
-    now := time.Now()
+	tableID := r.getTableIDDeterministic(tableName)
+	now := time.Now()
 
-    for _, record := range records {
-        pkValueRaw, ok := record[pkCol]
-        if !ok {
-            continue
-        }
+	for _, record := range records {
+		pkValueRaw, ok := record[pkCol]
+		if !ok {
+			continue
+		}
 
-        s_indx := getUint64FromInterface(pkValueRaw)
-        if s_indx == 0 {
-            continue
-        }
+		s_indx := getUint64FromInterface(pkValueRaw)
+		if s_indx == 0 {
+			continue
+		}
 
-        global_id := generateCompactGlobalID(tableID, s_indx)
+		global_id := generateCompactGlobalID(tableID, s_indx)
 
-        searchText := r.extractSearchableText(record, table)
-        tokens := strings.Fields(searchText)
+		searchText := r.extractSearchableText(record, table)
+		tokens := strings.Fields(searchText)
 
-        var updatedAt time.Time
-        if val, ok := record["updated_at"].(time.Time); ok {
-            updatedAt = val
-        }
-        if updatedAt.IsZero() {
-            updatedAt = now
-        }
+		var updatedAt time.Time
+		if val, ok := record["updated_at"].(time.Time); ok {
+			updatedAt = val
+		}
+		if updatedAt.IsZero() {
+			updatedAt = now
+		}
 
-        isDeleted := uint8(0)
-        if val, ok := record["is_deleted"]; ok {
-            if deleted, ok := val.(bool); ok && deleted {
-                isDeleted = 1
-            }
-        }
+		isDeleted := uint8(0)
+		if val, ok := record["is_deleted"]; ok {
+			if deleted, ok := val.(bool); ok && deleted {
+				isDeleted = 1
+			}
+		}
 
-        originalData, _ := json.Marshal(record)
+		originalData, _ := json.Marshal(record)
 
-        // Append Main
-        if err := batch.Append(s_indx, global_id, string(originalData), isDeleted, now, updatedAt); err != nil {
-            return fmt.Errorf("failed to append main batch: %w", err)
-        }
+		// Append Main
+		if err := batch.Append(s_indx, global_id, string(originalData), isDeleted, now, updatedAt); err != nil {
+			return fmt.Errorf("failed to append main batch: %w", err)
+		}
 
-        // Process Tokens
-        // Use a local cache to dedup tokens within the same record (so "error error" counts as 1 stat)
-        seenTokens := make(map[uint64]bool)
+		// Process Tokens
+		// Use a local cache to dedup tokens within the same record (so "error error" counts as 1 stat)
+		seenTokens := make(map[uint64]bool)
 
-        for _, token := range tokens {
-            if len(token) < 2 {
-                continue
-            }
-            
-            tokenLower := strings.ToLower(token)
-            tokenHash := hashToken(tokenLower)
+		for _, token := range tokens {
+			if len(token) < 2 {
+				continue
+			}
 
-            // 1. Insert into Token Stream (triggers MV)
-            if err := tokenBatch.Append(tokenHash, tokenLower, global_id, tableName, now); err != nil {
-                // Log warning but usually continue
-                log.Printf("warn: failed token append: %v", err)
-            }
+			tokenLower := strings.ToLower(token)
+			tokenHash := hashToken(tokenLower)
 
-            // 2. Insert into Stats (if not seen in this record)
-            if !seenTokens[tokenHash] {
-                seenTokens[tokenHash] = true
-                if err := statsBatch.Append(tokenHash, tableName, 1, now); err != nil {
-                    log.Printf("warn: failed stats append: %v", err)
-                }
-            }
-        }
-    }
+			// 1. Insert into Token Stream (triggers MV)
+			if err := tokenBatch.Append(tokenHash, tokenLower, global_id, tableName, now); err != nil {
+				// Log warning but usually continue
+				log.Printf("warn: failed token append: %v", err)
+			}
 
-    // Send all batches
-    if err := batch.Send(); err != nil {
-        return fmt.Errorf("main batch send failed: %w", err)
-    }
-    if err := tokenBatch.Send(); err != nil {
-        return fmt.Errorf("token batch send failed: %w", err)
-    }
-    if err := statsBatch.Send(); err != nil {
-        return fmt.Errorf("stats batch send failed: %w", err)
-    }
+			// 2. Insert into Stats (if not seen in this record)
+			if !seenTokens[tokenHash] {
+				seenTokens[tokenHash] = true
+				if err := statsBatch.Append(tokenHash, tableName, 1, now); err != nil {
+					log.Printf("warn: failed stats append: %v", err)
+				}
+			}
+		}
+	}
 
-    duration := time.Since(startTime)
-    if len(records) > 100 {
-        log.Printf("[BulkIndex] %s: %d records in %v", tableName, len(records), duration)
-    }
+	// Send all batches
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("main batch send failed: %w", err)
+	}
+	if err := tokenBatch.Send(); err != nil {
+		return fmt.Errorf("token batch send failed: %w", err)
+	}
+	if err := statsBatch.Send(); err != nil {
+		return fmt.Errorf("stats batch send failed: %w", err)
+	}
 
-    return nil
+	duration := time.Since(startTime)
+	if len(records) > 100 {
+		log.Printf("[BulkIndex] %s: %d records in %v", tableName, len(records), duration)
+	}
+
+	return nil
 }
 
 func getUint64FromInterface(val interface{}) uint64 {
@@ -505,94 +499,95 @@ func (r *SearchRepository) BulkIndexTokens(ctx context.Context, tableName string
 // ⭐ MAIN SEARCH FUNCTION: INFINITE SCROLL (Search-After Pattern)
 // search_repository.go
 
-// search_repository.go
+// In search_repository.go
 
 func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTerm string, limit int, cursor string) (*SearchResult, error) {
-    searchTerm = strings.ToLower(strings.TrimSpace(searchTerm))
-    tokens := strings.Fields(searchTerm)
+	searchTerm = strings.ToLower(strings.TrimSpace(searchTerm))
+	tokens := strings.Fields(searchTerm)
 
-    if len(tokens) == 0 {
-        return &SearchResult{Data: []map[string]interface{}{}}, nil
-    }
+	if len(tokens) == 0 {
+		return &SearchResult{Data: []map[string]interface{}{}}, nil
+	}
 
-    // 1. Get Token Hashes
-    var tokenHashes []uint64
-    for _, t := range tokens {
-        tokenHashes = append(tokenHashes, hashToken(t))
-    }
+	// 1. Get Token Hashes
+	var tokenHashes []uint64
+	for _, t := range tokens {
+		tokenHashes = append(tokenHashes, hashToken(t))
+	}
 
-    // 2. Decode Cursor
-    c, _ := unmarshalCursor(cursor)
+	// 2. Decode Cursor
+	c, _ := unmarshalCursor(cursor)
 
-    // 3. Construct Bitmap Query
-    // We use a WITH clause to make it cleaner and safer.
-    // 'res' will be a Bitmap object.
-    var bitmapQuery string
-    
-    if len(tokenHashes) == 1 {
-        bitmapQuery = fmt.Sprintf(`
-            SELECT ids_bitmap 
-            FROM search_token_bitmap 
-            WHERE token_hash = %d 
-            LIMIT 1
-        `, tokenHashes[0])
-    } else {
-        // For multiple tokens, we must intersect.
-        // We use groupBitmapMerge on the filtered table, then bitmapAnd.
-        var views []string
-        for i, hash := range tokenHashes {
-            views = append(views, fmt.Sprintf(
-                // We select the merged bitmap for this specific hash
-                "(SELECT groupBitmapMerge(ids_bitmap) FROM search_token_bitmap WHERE token_hash = %d) as b%d",
-                hash, i,
-            ))
-        }
-        
-        // Join them: SELECT bitmapAnd(b0, bitmapAnd(b1, b2))
-        intersection := "b0"
-        for i := 1; i < len(views); i++ {
-            intersection = fmt.Sprintf("bitmapAnd(%s, b%d)", intersection, i)
-        }
-        
-        bitmapQuery = fmt.Sprintf("SELECT %s FROM (SELECT %s)", intersection, strings.Join(views, ", "))
-    }
+	// 3. Construct Bitmap Query
+	var bitmapQuery string
 
-    // 4. Final Query with Cursor
-    // We wrap the result in ifNull to handle empty searches gracefully.
-    finalQuery := fmt.Sprintf(`
-        SELECT arrayJoin(bitmapToArray(ifNull(
-            (%s),
-            bitmapBuild(emptyArrayUInt64())
-        ))) as global_id
-    `, bitmapQuery)
+	if len(tokenHashes) == 1 {
+		// Single token: We just want the bitmap state directly
+		// Note: We use groupBitmapMergeState here too for consistency,
+		// or just select the column if we were querying the raw table directly,
+		// but since we might have multiple rows per hash (merged by background process),
+		// merging the state is safest.
+		bitmapQuery = fmt.Sprintf(`
+        SELECT groupBitmapMergeState(ids_bitmap)
+        FROM search_token_bitmap 
+        WHERE token_hash = %d 
+    `, tokenHashes[0])
+	} else {
+		// Multiple tokens: Intersect logic
+		var views []string
+		for i, hash := range tokenHashes {
+			views = append(views, fmt.Sprintf(
+				// ⭐ FIX: Changed groupBitmapMerge -> groupBitmapMergeState
+				// This returns the Bitmap object (State) instead of the Count (UInt64)
+				"(SELECT groupBitmapMergeState(ids_bitmap) FROM search_token_bitmap WHERE token_hash = %d) as b%d",
+				hash, i,
+			))
+		}
 
-    // Add Cursor Logic
-    var whereClause string
-    if c.LastGlobalID != "" {
-        parsedID, err := strconv.ParseUint(c.LastGlobalID, 10, 64)
-        if err == nil {
-            whereClause = fmt.Sprintf(" WHERE global_id < %d", parsedID)
-        }
-    }
+		// Join them: SELECT bitmapAnd(b0, bitmapAnd(b1, b2))
+		intersection := "b0"
+		for i := 1; i < len(views); i++ {
+			intersection = fmt.Sprintf("bitmapAnd(%s, b%d)", intersection, i)
+		}
 
-    // Apply Limit + 1 for pagination check
-    query := fmt.Sprintf(`
-        SELECT global_id FROM (
-            %s
-        ) 
+		bitmapQuery = fmt.Sprintf("SELECT %s FROM (SELECT %s)", intersection, strings.Join(views, ", "))
+	}
+
+	// 4. Final Query with Cursor
+	// We wrap the result in ifNull to handle empty searches gracefully.
+	finalQuery := fmt.Sprintf(`
+    SELECT arrayJoin(bitmapToArray(ifNull(
+        (%s),
+        bitmapBuild(emptyArrayUInt64())
+    ))) as global_id
+`, bitmapQuery)
+
+	// Add Cursor Logic
+	var whereClause string
+	if c.LastGlobalID != "" {
+		parsedID, err := strconv.ParseUint(c.LastGlobalID, 10, 64)
+		if err == nil {
+			whereClause = fmt.Sprintf(" WHERE global_id < %d", parsedID)
+		}
+	}
+
+	// Apply Limit + 1 for pagination check
+	query := fmt.Sprintf(`
+    SELECT global_id FROM (
         %s
-        ORDER BY global_id DESC
-        LIMIT %d
-    `, finalQuery, whereClause, limit+1)
+    ) 
+    %s
+    ORDER BY global_id DESC
+    LIMIT %d
+`, finalQuery, whereClause, limit+1)
 
-    rows, err := r.conn.Query(ctx, query)
-    if err != nil {
-        return nil, fmt.Errorf("bitmap query failed: %w", err)
-    }
-    defer rows.Close()
+	rows, err := r.conn.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("bitmap query failed: %w", err)
+	}
+	defer rows.Close()
 
-    // ... (Rest of the function remains the same: collect IDs, resolve tables, fetch data) ...
-
+	// ... (rest of the function remains exactly the same) ...
 	// 5. Collect IDs
 	var globalIDs []uint64
 	for rows.Next() {
@@ -638,11 +633,11 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 			inClause := strings.Join(idStrs, ",")
 
 			lookupQuery := fmt.Sprintf(`
-                SELECT original_data, updated_at, s_indx, global_id
-                FROM search_%s
-                WHERE global_id IN (%s) AND is_deleted = 0
-                ORDER BY global_id DESC
-            `, tName, inClause)
+            SELECT original_data, updated_at, s_indx, global_id
+            FROM search_%s
+            WHERE global_id IN (%s) AND is_deleted = 0
+            ORDER BY global_id DESC
+        `, tName, inClause)
 
 			dataRows, err := r.conn.Query(ctx, lookupQuery)
 			if err != nil {
@@ -711,12 +706,11 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 	}
 
 	return &SearchResult{
-		Data:               allRecords,
-		Count:              len(allRecords),
-		HasMore:            hasMore,
-		NextCursor:         nextCursor,
-		Aggregations:       pageAggregations,
-		GlobalAggregations: r.getGlobalStatsFromHashes(tokenHashes),
+		Data:         allRecords,
+		Count:        len(allRecords),
+		HasMore:      hasMore,
+		NextCursor:   nextCursor,
+		Aggregations: pageAggregations,
 	}, nil
 }
 

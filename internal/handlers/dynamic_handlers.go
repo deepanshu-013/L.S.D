@@ -416,20 +416,10 @@ func (h *DynamicHandler) SearchOptimized(w http.ResponseWriter, r *http.Request)
 		"total_results": result.Count,
 		"has_more":      result.HasMore,
 		"next_cursor":   result.NextCursor,
-
-		// ⭐ FIXED: Explicitly passing the new fields from the repo
-		//	"aggregations":         result.Aggregations,       // Stats for THIS page
-		"total_tables_matched": result.TotalTablesMatched, // Total tables globally
-
-		// ⭐ CRITICAL ADD: This was missing from your code!
-		"global_aggregations": result.GlobalAggregations, // Stats for GLOBAL database
-
-		//	"tables_queried":       len(tableGroups),        // Kept for legacy compatibility
 		"search_time":   duration.Milliseconds(), // ⭐ FIXED: Actual time in ms
 		"query":         query,
 		"limit":         limit,
 		"search_engine": "clickhouse_optimized_map",
-		//	"clickhouse_available": true,
 	})
 }
 

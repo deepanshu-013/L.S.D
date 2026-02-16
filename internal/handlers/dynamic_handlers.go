@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -291,78 +290,6 @@ func (h *DynamicHandler) SearchRecords(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// func (h *DynamicHandler) GlobalSearch(w http.ResponseWriter, r *http.Request) {
-// 	query := r.URL.Query().Get("q")
-// 	if query == "" {
-// 		h.writeError(w, http.StatusBadRequest, "Query parameter 'q' is required")
-// 		return
-// 	}
-
-// 	if len(query) < 2 || len(query) > 100 {
-// 		h.writeError(w, http.StatusBadRequest, "Search term must be 2-100 characters")
-// 		return
-// 	}
-
-// 	limit := 20
-// 	if l := r.URL.Query().Get("limit"); l != "" {
-// 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
-// 			limit = parsed
-// 		}
-// 	}
-
-// 	exactMatch := r.URL.Query().Get("exact") == "true"
-// 	cursor := r.URL.Query().Get("cursor")
-
-// 	var dateFrom *time.Time
-// 	if df := r.URL.Query().Get("date_from"); df != "" {
-// 		if parsed, err := time.Parse("2006-01-02", df); err == nil {
-// 			dateFrom = &parsed
-// 		}
-// 	}
-
-// 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-// 	defer cancel()
-
-// 	if h.chSearch == nil || !h.chSearch.IsAvailable() {
-// 		h.writeError(w, http.StatusServiceUnavailable, "ClickHouse search not available")
-// 		return
-// 	}
-
-// 	startTime := time.Now()
-// 	result, err := h.chSearch.GlobalSearchParallel(ctx, query, limit, cursor, exactMatch, dateFrom)
-// 	if err != nil {
-// 		h.writeError(w, http.StatusInternalServerError, "Search failed: "+err.Error())
-// 		return
-// 	}
-
-// 	duration := time.Since(startTime)
-
-// 	tableGroups := make(map[string][]map[string]interface{})
-// 	for _, record := range result.Data {
-// 		if sourceTable, ok := record["_source_table"].(string); ok {
-// 			tableGroups[sourceTable] = append(tableGroups[sourceTable], record)
-// 		}
-// 	}
-
-// 	h.writeJSONCompressed(w, r, http.StatusOK, map[string]interface{}{
-// 		"results":              tableGroups,
-// 		"total_results":        result.Count,
-// 		"has_more":             result.HasMore,
-// 		"next_cursor":          result.NextCursor,
-// 		"tables_searched":      len(tableGroups),
-// 		"search_time":          duration.Milliseconds(),
-// 		"query":                query,
-// 		"limit":                limit,
-// 		"cursor":               cursor,
-// 		"exact_match":          exactMatch,
-// 		"date_from":            dateFrom,
-// 		"search_engine":        "clickhouse_parallel",
-// 		"clickhouse_available": true,
-// 	})
-// }
-
-// In internal/handlers/dynamic_handler.go
-
 func (h *DynamicHandler) SearchOptimized(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	cursor := r.URL.Query().Get("cursor")
@@ -422,17 +349,6 @@ func (h *DynamicHandler) SearchOptimized(w http.ResponseWriter, r *http.Request)
 		"search_engine": "clickhouse_optimized_map",
 	})
 }
-
-// Update GlobalSearchThreeLayer
-func (h *DynamicHandler) GlobalSearchThreeLayer(w http.ResponseWriter, r *http.Request) {
-	// Entity search is now disabled/bullshit per user request
-	h.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-		"error":   "Entity Search (Fuzzy Match) is disabled for performance.",
-		"message": "Please use /api/search/optimized for exact match search.",
-	})
-}
-
-// Update GlobalSearchHybrid
 
 // Update GetEntityStats
 func (h *DynamicHandler) GetEntityStats(w http.ResponseWriter, r *http.Request) {
@@ -513,12 +429,11 @@ func (h *DynamicHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":       "healthy",
-		"service":      "dynamic-api",
+		"status":       "UP",
+		"service":      "L.S.D",
 		"tables_count": len(tables),
 		"clickhouse":   clickhouseAvailable,
 		"redis":        h.cache.IsAvailable(),
-		"optimized":    os.Getenv("USE_OPTIMIZED_SEARCH") == "true",
 	})
 }
 

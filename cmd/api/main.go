@@ -142,7 +142,7 @@ func main() {
 	mux.HandleFunc("GET /api/tables/{table}/search", dynamicHandler.SearchRecords)
 
 	// ⭐ NEW: Optimized endpoints (5-30× faster)
-	mux.HandleFunc("GET /api/search/optimized", dynamicHandler.SearchOptimized)
+	mux.HandleFunc("GET /api/search/", dynamicHandler.SearchOptimized)
 	// ═══════════════════════════════════════════════════════════
 	// 📥 PIPELINE
 	// ═══════════════════════════════════════════════════════════
@@ -169,22 +169,18 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-
+	asciiart := ` __        ____         ____      
+/\ \      /\  _\      /\  _\    
+\ \ \     \ \,\L\_\    \ \ \/\ \  
+ \ \ \  __ \/_\__ \     \ \ \ \ \ 
+  \ \ \L\ \__/\ \L\ \  __\ \ \_\ \
+   \ \____/\_\ \____\/\_\\ \____/
+    \/___/\/_/\/_____/\/_/ \/___/ 
+                                  
+`
 	go func() {
-		log.Println("═══════════════════════════════════════════════════════════")
-		log.Printf("🚀 High-Performance API Server Starting")
-		log.Println("═══════════════════════════════════════════════════════════")
-		log.Printf("   🌐 Server:              http://localhost:%s", cfg.Port)
-		log.Printf("   📊 Dashboard UI:        http://localhost:%s/", cfg.Port)
-		log.Printf("   🏥 Health Check:        http://localhost:%s/api/health", cfg.Port)
-		log.Println("───────────────────────────────────────────────────────────")
-		log.Println("   🔍 Search Endpoints:")
-		log.Printf("      • Legacy Global:     http://localhost:%s/api/search?q=test", cfg.Port)
-		log.Printf("      • ⚡ Parallel:        http://localhost:%s/api/search/parallel?q=test", cfg.Port)
-		log.Printf("      • 🚀 Cursor:          http://localhost:%s/api/tables/users/search/cursor?q=test", cfg.Port)
-		log.Println("───────────────────────────────────────────────────────────")
-		log.Printf("   📥 Pipeline API:        http://localhost:%s/api/pipeline/start", cfg.Port)
-		log.Printf("   📈 Tables List:         http://localhost:%s/api/tables", cfg.Port)
+		log.Println(asciiart)
+		log.Printf("🚀 L.S.D API Server Starting")
 		log.Println("═══════════════════════════════════════════════════════════")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

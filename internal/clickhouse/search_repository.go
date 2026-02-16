@@ -758,28 +758,6 @@ func (r *SearchRepository) InitializeEntitySearch(ctx context.Context) error {
 	return r.entityRepo.Initialize(ctx)
 }
 
-// --- WRAPPERS ---
-
-func (r *SearchRepository) SearchHybrid(ctx context.Context, searchTerm string, limit int, cursor string) (*SearchResult, error) {
-	return r.SearchFullHistoryBitmap(ctx, searchTerm, limit, cursor)
-}
-
-func (r *SearchRepository) GlobalSearch(ctx context.Context, searchTerm string, limit int, exactMatch bool, dateFrom *time.Time) (*SearchResult, error) {
-	return r.SearchFullHistoryBitmap(ctx, searchTerm, limit, "")
-}
-
-func (r *SearchRepository) GlobalSearchParallel(ctx context.Context, searchTerm string, limit int, cursor string, exactMatch bool, dateFrom *time.Time) (*SearchResult, error) {
-	return r.SearchFullHistoryBitmap(ctx, searchTerm, limit, cursor)
-}
-
-func (r *SearchRepository) SearchFullHistory(ctx context.Context, searchTerm string, limit int) (*SearchResult, error) {
-	return r.SearchFullHistoryBitmap(ctx, searchTerm, limit, "")
-}
-
-func (r *SearchRepository) MultiColumnSearch(ctx context.Context, params SearchParams) (*SearchResult, error) {
-	return r.SearchFullHistoryBitmap(ctx, params.SearchTerm, params.Limit, params.Cursor)
-}
-
 func (r *SearchRepository) SearchWithCursor(
 	ctx context.Context,
 	tableName, searchTerm string,

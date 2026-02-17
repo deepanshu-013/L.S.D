@@ -3,13 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
 	"highperf-api/internal/cache"
 	"highperf-api/internal/clickhouse"
 	"highperf-api/internal/config"
@@ -18,11 +11,24 @@ import (
 	"highperf-api/internal/middleware"
 	"highperf-api/internal/pipeline"
 	"highperf-api/internal/schema"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	asciiart "github.com/romance-dev/ascii-art"
+	_ "github.com/romance-dev/ascii-art/fonts"
 )
 
 func main() {
 	cfg := config.LoadConfig()
 	ctx := context.Background()
+	// You can also specify a font (e.g., "isometric1")
+	asciiart.NewFigure("L.S.D", "isometric1", true).Print()
+	log.Printf("🚀 L.S.D API Server Starting")
+	log.Println("═══════════════════════════════════════════════════════════")
 
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -169,19 +175,8 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	asciiart := ` __        ____         ____      
-/\ \      /\  _\      /\  _\    
-\ \ \     \ \,\L\_\    \ \ \/\ \  
- \ \ \  __ \/_\__ \     \ \ \ \ \ 
-  \ \ \L\ \__/\ \L\ \  __\ \ \_\ \
-   \ \____/\_\ \____\/\_\\ \____/
-    \/___/\/_/\/_____/\/_/ \/___/ 
-                                  
-`
+
 	go func() {
-		log.Println(asciiart)
-		log.Printf("🚀 L.S.D API Server Starting")
-		log.Println("═══════════════════════════════════════════════════════════")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed to start: %v", err)

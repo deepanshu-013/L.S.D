@@ -13,7 +13,6 @@ type AuthHandler struct {
 	authService *auth.AuthService
 }
 
-// Updated to accept *pgxpool.Pool
 func NewAuthHandler(db *pgxpool.Pool, service *auth.AuthService) *AuthHandler {
 	return &AuthHandler{
 		db:          db,
@@ -21,40 +20,48 @@ func NewAuthHandler(db *pgxpool.Pool, service *auth.AuthService) *AuthHandler {
 	}
 }
 
-type LoginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-type RegisterRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Role     string `json:"role"`
-}
-
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	var username, password string
+
+	// 1. Check if GET request (Browser URL mode)
+	if r.Method == http.MethodGet {
+		username = r.URL.Query().Get("username")
+		password = r.URL.Query().Get("password")
+	} else {
+		// 2. Fallback to POST (JSON body mode)
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		username = req.Username
+		password = req.Password
+	}
+
+	if username == "" || password == "" {
+		http.Error(w, `{"error": "Username and password required"}`, http.StatusBadRequest)
 		return
 	}
 
+	// 3. Verify User
 	var id int
-	var username, role, hash string
-
-	// Query using pgxpool
-	query := `SELECT id, username, role, password_hash FROM users WHERE username = $1`
-	err := h.db.QueryRow(r.Context(), query, req.Username).Scan(&id, &username, &role, &hash)
+	var role, hash string
+	query := `SELECT id, role, password_hash FROM users WHERE username = $1`
+	err := h.db.QueryRow(r.Context(), query, username).Scan(&id, &role, &hash)
 	if err != nil {
+		http.Error(w, `{"error": "User not found"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if !h.authService.CheckPasswordHash(password, hash) {
 		http.Error(w, `{"error": "Invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
 
-	if !h.authService.CheckPasswordHash(req.Password, hash) {
-		http.Error(w, `{"error": "Invalid credentials"}`, http.StatusUnauthorized)
-		return
-	}
-
+	// 4. Generate Token
 	token, err := h.authService.GenerateToken(id, username, role)
 	if err != nil {
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
@@ -67,8 +74,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Register remains POST-only for safety, or you can make it GET similarly if needed.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
-	var req RegisterRequest
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return

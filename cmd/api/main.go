@@ -144,9 +144,13 @@ func main() {
 	// 🔓 PUBLIC ROUTES (No Token Needed)
 	// ═══════════════════════════════════════════════════════════
 
+	// Allow GET for easy browser login
+	mux.HandleFunc("GET /api/auth/login", authHandler.Login)
 	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
-	mux.HandleFunc("POST /api/auth/register", authHandler.Register) // ⚠️ Disable this in production after creating admin
-	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck)   // Health check usually public
+
+	mux.HandleFunc("POST /api/auth/register", authHandler.Register)
+	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck)
+	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck) // Health check usually public
 
 	// Static Files (Public)
 	fs := http.FileServer(http.Dir("./web/"))

@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-// Key type for context values
 type ContextKey string
 
 const UserKey ContextKey = "user"
@@ -20,30 +19,35 @@ func NewAuthMiddleware(service *auth.AuthService) *AuthMiddleware {
 	return &AuthMiddleware{authService: service}
 }
 
-// RequireAuth is a middleware wrapper that checks for a valid JWT
 func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var tokenString string
+
+		// 1. Check Authorization Header (Bearer Token)
 		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			http.Error(w, `{"error": "Authorization header missing"}`, http.StatusUnauthorized)
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+
+		// 2. Fallback: Check URL Query Parameter (?token=...)
+		if tokenString == "" {
+			tokenString = r.URL.Query().Get("token")
+		}
+
+		// 3. If still no token, reject
+		if tokenString == "" {
+			http.Error(w, `{"error": "Authentication required. Use Header or ?token=..."}`, http.StatusUnauthorized)
 			return
 		}
 
-		// Expected format: "Bearer <token>"
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, `{"error": "Invalid authorization format. Use: Bearer <token>"}`, http.StatusUnauthorized)
-			return
-		}
-
-		tokenString := parts[1]
+		// 4. Validate
 		claims, err := m.authService.ValidateToken(tokenString)
 		if err != nil {
 			http.Error(w, `{"error": "Invalid or expired token"}`, http.StatusUnauthorized)
 			return
 		}
 
-		// Inject user info into request context
+		// Inject user info into context
 		ctx := context.WithValue(r.Context(), UserKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

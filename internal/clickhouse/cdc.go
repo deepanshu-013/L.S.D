@@ -17,15 +17,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NOTE: imports intentionally limited to standard + internal packages used here.
-
 type CDCConfig struct {
 	BatchSize       int
 	SyncInterval    time.Duration
 	ParallelWorkers int
 	ChunkSize       int64
-	// MaxRetries for chunk ingestion to ensure atomicity
-	MaxRetries int
+	MaxRetries      int
 }
 
 type CDCManager struct {
@@ -81,11 +78,9 @@ func NewCDCManager(pgPool *pgxpool.Pool, chRepo *SearchRepository, registry *sch
 	if cfg.ParallelWorkers == 0 {
 		cfg.ParallelWorkers = 5
 	}
-	// Lower default chunk size to 10k for safer memory/IO behavior
 	if cfg.ChunkSize == 0 {
 		cfg.ChunkSize = 10000
 	}
-	// Default to 3 retries for atomicity
 	if cfg.MaxRetries == 0 {
 		cfg.MaxRetries = 3
 	}
@@ -134,9 +129,6 @@ func (m *CDCManager) Start() {
 
 	ctx := context.Background()
 
-	// ═══════════════════════════════════════════════════════
-	// ⭐ CRITICAL: Ensure global tables exist with correct schema
-	// ═══════════════════════════════════════════════════════
 	if err := m.ensureGlobalTables(ctx); err != nil {
 		log.Printf("FATAL: Failed to create global tables: %v", err)
 		return
@@ -150,11 +142,6 @@ func (m *CDCManager) Start() {
 	log.Printf("CDC sync started for %d tables with batch size %d and chunk size %d", len(m.tables), m.config.BatchSize, m.config.ChunkSize)
 	m.loadCheckpoints()
 
-	// // ⭐ Start Bitmap Monitoring
-	// m.wg.Add(1)
-	// go m.monitorBitmaps()
-
-	// ⭐ Start Data Sync
 	m.wg.Add(1)
 	go m.syncLoop()
 }
@@ -219,43 +206,6 @@ func (m *CDCManager) syncLoop() {
 	}
 }
 
-// // ⭐ NEW: Bitmap Monitor
-// func (m *CDCManager) monitorBitmaps() {
-// 	defer m.wg.Done()
-
-// 	ticker := time.NewTicker(30 * time.Second)
-// 	defer ticker.Stop()
-
-// 	for {
-// 		select {
-// 		case <-m.stopChan:
-// 			return
-// 		case <-ticker.C:
-// 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-// 			queryTokens := `SELECT count() FROM search_token_bitmap`
-// 			var tokenCount uint64
-// 			row1 := m.chRepo.conn.QueryRow(ctx, queryTokens)
-// 			if err := row1.Scan(&tokenCount); err != nil {
-// 				log.Printf("[Bitmap Monitor] Failed to count tokens: %v", err)
-// 			}
-
-// 			queryTotal := `SELECT sum(total_count) FROM search_token_bitmap`
-// 			var totalIDs uint64
-// 			row2 := m.chRepo.conn.QueryRow(ctx, queryTotal)
-// 			if err := row2.Scan(&totalIDs); err != nil {
-// 				log.Printf("[Bitmap Monitor] Failed to sum IDs: %v", err)
-// 			}
-
-// 			cancel()
-
-// 			if tokenCount > 0 || totalIDs > 0 {
-// 				log.Printf("📊 [Bitmap Monitor] Tokens: %d | Tracked IDs: %d", tokenCount, totalIDs)
-// 			}
-// 		}
-// 	}
-// }
-
 func (m *CDCManager) parallelInitialSync() {
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, m.config.ParallelWorkers)
@@ -277,37 +227,28 @@ func (m *CDCManager) parallelInitialSync() {
 }
 
 // ⭐ UPDATED SCHEMA MANAGER
-// CDC.go
-
-// CDC.go
-
-// CDC.go
-
 func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
-	log.Println("🛠️ Ensuring global tables (Forcing Clean Rebuild)...")
+	log.Println("🛠️ Ensuring global tables (Smart Indexing Schema)...")
 
-	// 1. Drop existing tables to clear old schema/data
-	// We must drop MVs first, then tables.
-	dropStatements := []string{
-		// "DROP TABLE IF EXISTS mv_token_bitmap",
-		// "DROP TABLE IF EXISTS search_token_bitmap",
-		// "DROP TABLE IF EXISTS search_token_stats",
-		// "DROP TABLE IF EXISTS search_token_entity", // Clean up legacy table
-	}
+	// // 1. Drop existing tables to force schema rebuild (Removing s_indx)
+	// dropStatements := []string{
+	// 	"DROP TABLE IF EXISTS mv_token_bitmap",
+	// 	"DROP TABLE IF EXISTS search_token_bitmap",
+	// 	"DROP TABLE IF EXISTS search_token_stats",
+	// 	"DROP TABLE IF EXISTS search_token_entity",
+	// }
 
-	for _, stmt := range dropStatements {
-		if err := m.chRepo.conn.Exec(ctx, stmt); err != nil {
-			// Log but don't stop on drop errors (might not exist)
-			log.Printf("Warn: cleanup error: %v", err)
-		}
-	}
+	// for _, stmt := range dropStatements {
+	// 	if err := m.chRepo.conn.Exec(ctx, stmt); err != nil {
+	// 		log.Printf("Warn: cleanup error: %v", err)
+	// 	}
+	// }
 
 	// 2. Create Global Bitmap Table
-	// We use AggregatingMergeTree to store Bitmap States.
+	// Removed 'token' string to save space. Only hash is needed.
 	bitmapTableSQL := `
         CREATE TABLE IF NOT EXISTS search_token_bitmap (
             token_hash UInt64,
-            token LowCardinality(String),
             ids_bitmap AggregateFunction(groupBitmap, UInt64),
             updated_at DateTime DEFAULT now()
         ) ENGINE = AggregatingMergeTree()
@@ -320,9 +261,11 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
 	log.Println("✅ search_token_bitmap created")
 
 	// 3. Create Stats Table
+	// Keeps token string for UI/Debug
 	statsTableSQL := `
         CREATE TABLE IF NOT EXISTS search_token_stats (
             token_hash UInt64,
+            token LowCardinality(String),
             table_name LowCardinality(String),
             count UInt64,
             updated_at DateTime DEFAULT now()
@@ -335,7 +278,7 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
 	}
 	log.Println("✅ search_token_stats created")
 
-	// 4. Create Token Stream Table (Buffer)
+	// 4. Create Token Stream Table
 	streamTableSQL := `
         CREATE TABLE IF NOT EXISTS search_token_entity (
             token_hash UInt64,
@@ -345,26 +288,24 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
             updated_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
         ORDER BY (token_hash, global_id)
-
+        TTL updated_at + INTERVAL 3 DAY DELETE
         SETTINGS index_granularity = 8192
     `
 	if err := m.chRepo.conn.Exec(ctx, streamTableSQL); err != nil {
 		return fmt.Errorf("failed to create search_token_entity: %w", err)
 	}
 
-	// 5. Create Materialized View (CRITICAL: Uses groupBitmapState)
-	// This converts rows of IDs into a compact Bitmap State inside the target table.
+	// 5. Create Materialized View
 	mvSQL := `
         CREATE MATERIALIZED VIEW IF NOT EXISTS mv_token_bitmap
         TO search_token_bitmap
         AS
         SELECT
             token_hash,
-            token,
             groupBitmapState(global_id) as ids_bitmap,
             max(updated_at) as updated_at
         FROM search_token_entity
-        GROUP BY token_hash, token
+        GROUP BY token_hash
     `
 	if err := m.chRepo.conn.Exec(ctx, mvSQL); err != nil {
 		return fmt.Errorf("failed to create mv_token_bitmap: %w", err)
@@ -385,7 +326,6 @@ func (m *CDCManager) ensureGlobalTables(ctx context.Context) error {
 }
 
 func (m *CDCManager) syncTableChunked(tableName string) error {
-	// validate table name before doing SQL construction
 	if !validCHIdent.MatchString(tableName) {
 		err := fmt.Errorf("invalid table name: %s", tableName)
 		m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = err.Error() })
@@ -423,9 +363,8 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 		return err
 	}
 
-	// Get Max ID for progress tracking
 	var totalRows int64
-	countQuery := fmt.Sprintf("SELECT COALESCE(MAX(%s), 0) FROM %s", pkCol, pgx.Identifier{tableName}.Sanitize())
+	countQuery := fmt.Sprintf("SELECT COALESCE(MAX(%s), 0) FROM %s", pgx.Identifier{pkCol}.Sanitize(), pgx.Identifier{tableName}.Sanitize())
 	if err := m.pgPool.QueryRow(ctx, countQuery).Scan(&totalRows); err != nil {
 		log.Printf("[%s] Failed to get max ID: %v", tableName, err)
 	}
@@ -468,18 +407,19 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 			endID = totalRows
 		}
 
-		// 1. Fetch Data from Postgres
 		query := fmt.Sprintf(`
             SELECT %s
             FROM %s
             WHERE %s > $1 AND %s <= $2
             ORDER BY %s
-        `, columnList, pgx.Identifier{tableName}.Sanitize(), pkCol, pkCol, pkCol)
+        `, columnList, pgx.Identifier{tableName}.Sanitize(),
+			pgx.Identifier{pkCol}.Sanitize(),
+			pgx.Identifier{pkCol}.Sanitize(),
+			pgx.Identifier{pkCol}.Sanitize())
 
 		rows, err := m.pgPool.Query(ctx, query, currentID, endID)
 		if err != nil {
 			log.Printf("[%s] Failed to query chunk %d-%d: %v", tableName, currentID, endID, err)
-			// Retryable or continue? we'll backoff and retry this chunk to avoid skipping source DB errors
 			backoffWithJitter(0)
 			continue
 		}
@@ -503,19 +443,14 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 		rows.Close()
 
 		if len(records) > 0 {
-			// 2. ⭐ ATOMIC INGESTION WITH RETRY
-			// We retry the whole chunk if BulkIndex fails.
-			// Because the main search_... table is ReplacingMergeTree, re-inserting fixes partial writes.
 			var ingestErr error
 			for attempt := 0; attempt < m.config.MaxRetries; attempt++ {
 				ingestErr = m.chRepo.BulkIndex(ctx, tableName, records)
 				if ingestErr == nil {
-					break // Success
+					break
 				}
 
-				// increment retry metric
 				m.chRepo.IncRetryCount(1)
-
 				log.Printf("[%s] ⚠️ Chunk ingest failed (Attempt %d/%d): %v", tableName, attempt+1, m.config.MaxRetries, ingestErr)
 
 				if attempt < m.config.MaxRetries-1 {
@@ -525,11 +460,8 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 
 			if ingestErr != nil {
 				log.Printf("[%s] 🚨 Failed to index chunk after %d retries. Inserting into dead-letter.", tableName, m.config.MaxRetries)
-
-				// Update status but DO NOT advance lastSyncedID. Next run will retry this chunk.
 				m.updateTableStatus(tableName, func(s *TableSyncStatus) { s.LastError = ingestErr.Error() })
 
-				// Insert dead-letter with a sample payload (first record) for triage.
 				sample := ""
 				if len(records) > 0 {
 					if b, err := json.Marshal(records[0]); err == nil {
@@ -541,10 +473,7 @@ func (m *CDCManager) syncTableChunked(tableName string) error {
 					log.Printf("[%s] Failed to insert dead-letter: %v", tableName, err)
 				}
 
-				// increment dead-letter metric
 				m.chRepo.IncDeadLetterCount(1)
-
-				// Return error so operator can look; this stops processing this table for now.
 				return fmt.Errorf("chunk ingestion failed permanently: %w", ingestErr)
 			}
 
@@ -616,7 +545,7 @@ func (m *CDCManager) incrementalSync(tableName string) error {
         WHERE %s > $1
         ORDER BY %s
         LIMIT $2
-    `, columnList, pgx.Identifier{tableName}.Sanitize(), pkCol, pkCol)
+    `, columnList, pgx.Identifier{tableName}.Sanitize(), pgx.Identifier{pkCol}.Sanitize(), pgx.Identifier{pkCol}.Sanitize())
 
 	rows, err := m.pgPool.Query(ctx, query, lastID, m.config.BatchSize)
 	if err != nil {
@@ -649,7 +578,6 @@ func (m *CDCManager) incrementalSync(tableName string) error {
 	rows.Close()
 
 	if len(records) > 0 {
-		// Apply same retry logic for incremental sync
 		var ingestErr error
 		for attempt := 0; attempt < m.config.MaxRetries; attempt++ {
 			ingestErr = m.chRepo.BulkIndex(ctx, tableName, records)
@@ -663,7 +591,6 @@ func (m *CDCManager) incrementalSync(tableName string) error {
 			}
 		}
 		if ingestErr != nil {
-			// send to dead-letter
 			sample := ""
 			if len(records) > 0 {
 				if b, err := json.Marshal(records[0]); err == nil {
@@ -711,45 +638,44 @@ func (m *CDCManager) loadCheckpoints() {
 
 	for _, tableName := range m.tables {
 
-		if tableName == "" {
-			continue
-		}
-
-		if !validCHIdent.MatchString(tableName) {
-			log.Printf("Skipping invalid table name in checkpoint: %s", tableName)
+		if tableName == "" || !validCHIdent.MatchString(tableName) {
 			continue
 		}
 
 		searchTable := fmt.Sprintf("search_%s", tableName)
 
-		// Check if table exists
 		checkQuery := `
             SELECT count()
             FROM system.tables
             WHERE database = currentDatabase()
-        	AND name = ?`
+            AND name = ?`
 		var exists uint64
 		row := m.chRepo.conn.QueryRow(ctx, checkQuery, searchTable)
 		if err := row.Scan(&exists); err != nil || exists == 0 {
-			// Table does not exist yet — skip silently
 			continue
 		}
 
+		// ⭐ UPDATED: Extract local ID from max global_id
 		query := fmt.Sprintf(
-			"SELECT coalesce(max(s_indx), 0) FROM %s WHERE is_deleted = 0",
+			"SELECT coalesce(max(global_id), 0) FROM %s WHERE is_deleted = 0",
 			searchTable,
 		)
 
-		var maxID uint64
+		var maxGlobalID uint64
 		row = m.chRepo.conn.QueryRow(ctx, query)
 
-		if err := row.Scan(&maxID); err == nil && maxID > 0 {
+		if err := row.Scan(&maxGlobalID); err == nil && maxGlobalID > 0 {
+			localID := extractLocalID(maxGlobalID)
 			m.mu.Lock()
-			m.lastSyncedID[tableName] = int64(maxID)
+			m.lastSyncedID[tableName] = int64(localID)
 			m.mu.Unlock()
-			log.Printf("[%s] Resuming from s_indx: %d", tableName, maxID)
+			log.Printf("[%s] Resuming from ID: %d (extracted from global_id)", tableName, localID)
 		}
 	}
+}
+
+func extractLocalID(globalID uint64) uint64 {
+	return globalID & 0xFFFFFFFFFFFF
 }
 
 func (m *CDCManager) updateTableStatus(tableName string, update func(*TableSyncStatus)) {
@@ -801,7 +727,12 @@ func ParseCDCPayload(payload []byte) (*CDCEvent, error) {
 }
 
 func joinColumns(columns []string) string {
-	return strings.Join(columns, ", ")
+	var quoted []string
+	for _, c := range columns {
+		// Wrap every column name in double quotes to handle reserved keywords like "on", "group", "user"
+		quoted = append(quoted, pgx.Identifier{c}.Sanitize())
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func (m *CDCManager) Restart() error {
@@ -875,21 +806,6 @@ func (m *CDCManager) GetEntityRepository() interface{} {
 	return nil
 }
 
-func (m *CDCManager) hasUpdatedAt(tableName string) bool {
-	table := m.registry.GetTable(tableName)
-	if table == nil {
-		return false
-	}
-
-	for _, col := range table.Columns {
-		if col.Name == "updated_at" {
-			return true
-		}
-	}
-	return false
-}
-
-// backoffWithJitter provides exponential backoff with jitter
 func backoffWithJitter(attempt int) {
 	baseMs := 500.0
 	maxMs := 30000.0
@@ -898,3 +814,5 @@ func backoffWithJitter(attempt int) {
 	sleep := time.Duration(exp+jitter) * time.Millisecond
 	time.Sleep(sleep)
 }
+
+// lol

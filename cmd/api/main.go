@@ -1,241 +1,249 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"highperf-api/internal/auth"
-	"highperf-api/internal/cache"
-	"highperf-api/internal/clickhouse"
-	"highperf-api/internal/config"
-	"highperf-api/internal/database"
-	"highperf-api/internal/handlers"
-	"highperf-api/internal/middleware"
-	"highperf-api/internal/pipeline"
-	"highperf-api/internal/schema"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
+    "context"
+    "fmt"
+    "highperf-api/internal/auth"
+    "highperf-api/internal/cache"
+    "highperf-api/internal/clickhouse"
+    "highperf-api/internal/config"
+    "highperf-api/internal/database"
+    "highperf-api/internal/handlers"
+    "highperf-api/internal/middleware"
+    "highperf-api/internal/pipeline"
+    "highperf-api/internal/schema"
+    "log"
+    "net/http"
+    "os"
+    "os/signal"
+    "syscall"
+    "time"
 
-	asciiart "github.com/romance-dev/ascii-art"
-	_ "github.com/romance-dev/ascii-art/fonts"
+    asciiart "github.com/romance-dev/ascii-art"
+    _ "github.com/romance-dev/ascii-art/fonts"
 )
 
 func main() {
-	cfg := config.LoadConfig()
-	ctx := context.Background()
+    cfg := config.LoadConfig()
+    ctx := context.Background()
 
-	asciiart.NewFigure("L.S.D", "isometric1", true).Print()
-	log.Printf("🚀 L.S.D API Server Starting")
-	log.Println("═══════════════════════════════════════════════════════════")
+    asciiart.NewFigure("L.S.D", "isometric1", true).Print()
+    log.Printf("🚀 L.S.D API Server Starting")
+    log.Println("═══════════════════════════════════════════════════════════")
 
-	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer pool.Close()
-	log.Println("Database connected")
+    pool, err := database.NewPool(ctx, cfg.DatabaseURL)
+    if err != nil {
+        log.Fatalf("Failed to connect to database: %v", err)
+    }
+    defer pool.Close()
+    log.Println("Database connected")
 
-	redisCache := cache.NewRedisCache(
-		cfg.RedisAddr,
-		cfg.RedisPassword,
-		cfg.RedisDB,
-		5*time.Minute,
-	)
+    redisCache := cache.NewRedisCache(
+        cfg.RedisAddr,
+        cfg.RedisPassword,
+        cfg.RedisDB,
+        5*time.Minute,
+    )
 
-	multiCache := cache.NewMultiLayerCache(redisCache, 30*time.Second)
-	log.Println("Multi-layer cache initialized")
+    multiCache := cache.NewMultiLayerCache(redisCache, 30*time.Second)
+    log.Println("Multi-layer cache initialized")
 
-	registry := schema.NewSchemaRegistry(pool.Pool)
-	if err := registry.LoadSchema(ctx); err != nil {
-		log.Fatalf("Failed to load schema: %v", err)
-	}
-	log.Printf("Schema loaded: %d tables discovered", len(registry.GetAllTables()))
+    registry := schema.NewSchemaRegistry(pool.Pool)
+    if err := registry.LoadSchema(ctx); err != nil {
+        log.Fatalf("Failed to load schema: %v", err)
+    }
+    log.Printf("Schema loaded: %d tables discovered", len(registry.GetAllTables()))
 
-	// ⭐ ClickHouse Connection Pool
-	chPool, err := clickhouse.NewConnectionPool(clickhouse.Config{
-		Addr:     cfg.ClickHouseAddr,
-		Database: cfg.ClickHouseDB,
-		Username: cfg.ClickHouseUser,
-		Password: cfg.ClickHousePassword,
-	}, 5)
+    // ⭐ ClickHouse Connection Pool
+    chPool, err := clickhouse.NewConnectionPool(clickhouse.Config{
+        Addr:     cfg.ClickHouseAddr,
+        Database: cfg.ClickHouseDB,
+        Username: cfg.ClickHouseUser,
+        Password: cfg.ClickHousePassword,
+    }, 5)
 
-	if err != nil {
-		log.Printf("ClickHouse pool creation failed: %v", err)
-	}
+    if err != nil {
+        log.Printf("ClickHouse pool creation failed: %v", err)
+    }
 
-	var chSearch *clickhouse.SearchRepository
-	if chPool != nil && chPool.IsAvailable() {
-		chSearch = clickhouse.NewSearchRepository(chPool, registry)
-		log.Println("✅ ClickHouse search repository initialized with connection pool (5 connections)")
-	} else {
-		log.Println("⚠️  ClickHouse not available, search will use PostgreSQL only")
-	}
+    var chSearch *clickhouse.SearchRepository
+    if chPool != nil && chPool.IsAvailable() {
+        chSearch = clickhouse.NewSearchRepository(chPool, registry)
+        log.Println("✅ ClickHouse search repository initialized with connection pool (5 connections)")
+    } else {
+        log.Println("⚠️  ClickHouse not available, search will use PostgreSQL only")
+    }
 
-	dynamicRepo := database.NewDynamicRepository(pool.Pool, registry)
-	dynamicHandler := handlers.NewDynamicHandler(
-		dynamicRepo,
-		registry,
-		multiCache,
-		chSearch,
-		50, 20,
-		120*time.Second,
-	)
+    dynamicRepo := database.NewDynamicRepository(pool.Pool, registry)
+    dynamicHandler := handlers.NewDynamicHandler(
+        dynamicRepo,
+        registry,
+        multiCache,
+        chSearch,
+        50, 20,
+        120*time.Second,
+    )
 
-	// Initialize CDC Manager
-	var cdcManager *clickhouse.CDCManager
-	if chPool != nil && chPool.IsAvailable() && cfg.EnableCDC {
-		cdcConfig := clickhouse.CDCConfig{
-			BatchSize:       10000,
-			SyncInterval:    30 * time.Second,
-			ParallelWorkers: 5,
-			ChunkSize:       100000,
-		}
+    // Initialize CDC Manager
+    var cdcManager *clickhouse.CDCManager
+    if chPool != nil && chPool.IsAvailable() && cfg.EnableCDC {
+        cdcConfig := clickhouse.CDCConfig{
+            BatchSize:       10000,
+            SyncInterval:    30 * time.Second,
+            ParallelWorkers: 5,
+            ChunkSize:       100000,
+        }
 
-		cdcManager = clickhouse.NewCDCManager(pool.Pool, chSearch, registry, cdcConfig)
-		dynamicHandler.SetCDCManager(cdcManager)
-		cdcManager.Start()
-		log.Println("🚀 CDC Manager started with auto-discovery")
-	}
+        cdcManager = clickhouse.NewCDCManager(pool.Pool, chSearch, registry, cdcConfig)
+        dynamicHandler.SetCDCManager(cdcManager)
+        cdcManager.Start()
+        log.Println("🚀 CDC Manager started with auto-discovery")
+    }
 
-	// Initialize Pipeline Processor
-	pipelineProcessor := pipeline.NewPipelineProcessor(pool.Pool, "./ErrorFiles")
+    // Initialize Pipeline Processor
+    pipelineProcessor := pipeline.NewPipelineProcessor(pool.Pool, "./ErrorFiles")
 
-	if cdcManager != nil {
-		pipelineProcessor.SetCDCTrigger(func(tableName string) error {
-			log.Printf("🔄 Pipeline completed for table: %s, triggering CDC sync...", tableName)
-			if err := cdcManager.TriggerTableSync(tableName); err != nil {
-				log.Printf("⚠️  CDC sync failed for %s: %v", tableName, err)
-				return err
-			}
-			log.Printf("✅ CDC sync completed for table: %s", tableName)
-			return nil
-		})
-		log.Println("🔗 Pipeline-to-CDC integration enabled")
-	}
+    if cdcManager != nil {
+        pipelineProcessor.SetCDCTrigger(func(tableName string) error {
+            log.Printf("🔄 Pipeline completed for table: %s, triggering CDC sync...", tableName)
+            if err := cdcManager.TriggerTableSync(tableName); err != nil {
+                log.Printf("⚠️  CDC sync failed for %s: %v", tableName, err)
+                return err
+            }
+            log.Printf("✅ CDC sync completed for table: %s", tableName)
+            return nil
+        })
+        log.Println("🔗 Pipeline-to-CDC integration enabled")
+    }
 
-	pipelineHandler := handlers.NewPipelineHandler(pipelineProcessor)
+    pipelineHandler := handlers.NewPipelineHandler(pipelineProcessor)
 
-	// ═══════════════════════════════════════════════════════════
-	// 🔐 AUTHENTICATION SETUP (API KEY MODE)
-	// ═══════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════
+    // 🔐 AUTHENTICATION SETUP
+    // ═══════════════════════════════════════════════════════════
 
-	// 1. Initialize Auth Service (Handles Password Hashing only)
-	authService := auth.NewAuthService()
+    authService := auth.NewAuthService()
+    authHandler := handlers.NewAuthHandler(pool.Pool, authService)
+    authMiddleware := middleware.NewAuthMiddleware(pool.Pool)
 
-	// 2. Initialize Auth Handler (Handles Login/Cookie)
-	authHandler := handlers.NewAuthHandler(pool.Pool, authService)
+    // ═══════════════════════════════════════════════════════════
+    // 🌐 ROUTER SETUP
+    // ═══════════════════════════════════════════════════════════
 
-	// 3. Initialize Auth Middleware (Validates API Key via DB)
-	// We pass the DB pool so it can query the 'users' table for api_key
-	authMiddleware := middleware.NewAuthMiddleware(pool.Pool)
+    mux := http.NewServeMux()
 
-	// ═══════════════════════════════════════════════════════════
-	// 🌐 ROUTER SETUP
-	// ═══════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════
+    // 🔓 PUBLIC ROUTES (Must be defined FIRST)
+    // ═══════════════════════════════════════════════════════════
 
-	mux := http.NewServeMux()
+    // 1. Login Page & API
+    mux.HandleFunc("GET /login", authHandler.Login)
+    mux.HandleFunc("POST /api/auth/login", authHandler.Login)
+    
+    // 2. Health Check
+    mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck)
 
-	// ═══════════════════════════════════════════════════════════
-	// 🔓 PUBLIC ROUTES (No Token Needed)
-	// ═══════════════════════════════════════════════════════════
+    // 3. Static Files (CSS, JS, Swagger)
+    mux.HandleFunc("GET /swagger.yaml", func(w http.ResponseWriter, r *http.Request) {
+        http.ServeFile(w, r, "./swagger.yaml")
+    })
+    mux.HandleFunc("GET /style.css", func(w http.ResponseWriter, r *http.Request) {
+        http.ServeFile(w, r, "./style.css")
+    })
+    mux.HandleFunc("GET /app.js", func(w http.ResponseWriter, r *http.Request) {
+        http.ServeFile(w, r, "./app.js")
+    })
+    
+    // 4. Index Page (Documentation) - PUBLIC
+    mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+        // Only serve index.html for exact root path
+        if r.URL.Path == "/" {
+            http.ServeFile(w, r, "./index.html")
+        } else {
+            // Let the protected handler catch other paths
+            http.NotFound(w, r)
+        }
+    })
 
-	// Login Endpoint (Sets Cookie)
-	mux.HandleFunc("GET /api/auth/login", authHandler.Login)
-	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
+    // ═══════════════════════════════════════════════════════════
+    // 🔒 PROTECTED ROUTES
+    // ═══════════════════════════════════════════════════════════
 
-	// Registration is disabled per requirements (Manual SQL only)
-	// mux.HandleFunc("POST /api/auth/register", authHandler.Register)
+    // Create a sub-mux for API routes that need protection
+    protectedMux := http.NewServeMux()
 
-	// Health Check
-	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck)
+    // Table Endpoints
+    protectedMux.HandleFunc("GET /api/tables", dynamicHandler.ListTables)
+    protectedMux.HandleFunc("GET /api/tables/{table}/schema", dynamicHandler.GetTableSchema)
+    protectedMux.HandleFunc("GET /api/tables/{table}/records", dynamicHandler.GetRecords)
+    protectedMux.HandleFunc("GET /api/tables/{table}/records/{pk}", dynamicHandler.GetRecordByPK)
+    protectedMux.HandleFunc("GET /api/tables/{table}/stats", dynamicHandler.GetTableStats)
+    protectedMux.HandleFunc("GET /api/tables/{table}/search", dynamicHandler.SearchRecords)
 
-	// Static Files (Public)
-	fs := http.FileServer(http.Dir("./web/"))
-	mux.Handle("/web/", http.StripPrefix("/web/", fs))
+    // Search Endpoints
+    protectedMux.HandleFunc("GET /api/search/", dynamicHandler.SearchOptimized)
 
-	// ═══════════════════════════════════════════════════════════
-	// 🔒 PROTECTED ROUTES (Token Required)
-	// ═══════════════════════════════════════════════════════════
+    // Pipeline Endpoints
+    protectedMux.HandleFunc("POST /api/pipeline/start", pipelineHandler.StartJob)
+    protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}", pipelineHandler.GetJobStatus)
+    protectedMux.HandleFunc("GET /api/pipeline/jobs", pipelineHandler.ListJobs)
+    protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}/stream", pipelineHandler.StreamJobProgress)
+    protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}/logs", pipelineHandler.GetJobLogs)
 
-	// We create a sub-mux for protected routes
-	protectedMux := http.NewServeMux()
+    // CDC Status
+    protectedMux.HandleFunc("GET /api/cdc/status", dynamicHandler.GetCDCStatus)
 
-	// Table Endpoints
-	protectedMux.HandleFunc("GET /api/tables", dynamicHandler.ListTables)
-	protectedMux.HandleFunc("GET /api/tables/{table}/schema", dynamicHandler.GetTableSchema)
-	protectedMux.HandleFunc("GET /api/tables/{table}/records", dynamicHandler.GetRecords)
-	protectedMux.HandleFunc("GET /api/tables/{table}/records/{pk}", dynamicHandler.GetRecordByPK)
-	protectedMux.HandleFunc("GET /api/tables/{table}/stats", dynamicHandler.GetTableStats)
-	protectedMux.HandleFunc("GET /api/tables/{table}/search", dynamicHandler.SearchRecords)
+    // Mount the protected mux under /api/ prefix, wrapped in Auth Middleware
+    mux.Handle("/api/", authMiddleware.RequireAuth(protectedMux))
 
-	// Search Endpoints (BITMAP PROTECTION)
-	protectedMux.HandleFunc("GET /api/search/", dynamicHandler.SearchOptimized)
+    // ═══════════════════════════════════════════════════════════
+    // 🛡️ GLOBAL MIDDLEWARE
+    // ═══════════════════════════════════════════════════════════
 
-	// Pipeline Endpoints
-	protectedMux.HandleFunc("POST /api/pipeline/start", pipelineHandler.StartJob)
-	protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}", pipelineHandler.GetJobStatus)
-	protectedMux.HandleFunc("GET /api/pipeline/jobs", pipelineHandler.ListJobs)
-	protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}/stream", pipelineHandler.StreamJobProgress)
-	protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}/logs", pipelineHandler.GetJobLogs)
+    handler := middleware.RateLimiter(mux)
+    handler = middleware.CORS(handler)
+    handler = middleware.Logger(handler)
 
-	// CDC Status
-	protectedMux.HandleFunc("GET /api/cdc/status", dynamicHandler.GetCDCStatus)
+    server := &http.Server{
+        Addr:         fmt.Sprintf(":%s", cfg.Port),
+        Handler:      handler,
+        ReadTimeout:  15 * time.Second,
+        WriteTimeout: 15 * time.Second,
+        IdleTimeout:  60 * time.Second,
+    }
 
-	// Mount the protected mux, wrapping it with Auth Middleware
-	// We use "/" to catch all requests that didn't match public routes above
-	mux.Handle("/", authMiddleware.RequireAuth(protectedMux))
+    go func() {
+        if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            log.Fatalf("Server failed to start: %v", err)
+        }
+    }()
 
-	// ═══════════════════════════════════════════════════════════
-	// 🛡️ GLOBAL MIDDLEWARE
-	// ═══════════════════════════════════════════════════════════
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    <-quit
 
-	handler := middleware.RateLimiter(mux)
-	handler = middleware.CORS(handler)
-	handler = middleware.Logger(handler)
+    log.Println("═══════════════════════════════════════════════════════════")
+    log.Println("🛑 Shutting down server gracefully...")
+    log.Println("═══════════════════════════════════════════════════════════")
 
-	server := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.Port),
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+    if cdcManager != nil {
+        log.Println("⏸️  Stopping CDC Manager...")
+        cdcManager.Stop()
+    }
 
-	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v", err)
-		}
-	}()
+    if chPool != nil {
+        log.Println("🔌 Closing ClickHouse connection pool...")
+        if err := chPool.Close(); err != nil {
+            log.Printf("⚠️  Error closing ClickHouse pool: %v", err)
+        }
+    }
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
 
-	log.Println("═══════════════════════════════════════════════════════════")
-	log.Println("🛑 Shutting down server gracefully...")
-	log.Println("═══════════════════════════════════════════════════════════")
+    if err := server.Shutdown(shutdownCtx); err != nil {
+        log.Fatalf("❌ Server forced to shutdown: %v", err)
+    }
 
-	if cdcManager != nil {
-		log.Println("⏸️  Stopping CDC Manager...")
-		cdcManager.Stop()
-	}
-
-	if chPool != nil {
-		log.Println("🔌 Closing ClickHouse connection pool...")
-		if err := chPool.Close(); err != nil {
-			log.Printf("⚠️  Error closing ClickHouse pool: %v", err)
-		}
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("❌ Server forced to shutdown: %v", err)
-	}
-
-	log.Println("✅ Server exited properly")
+    log.Println("✅ Server exited properly")
 }

@@ -35,11 +35,10 @@ type SearchRepository struct {
 	entityRepo *EntityRepository
 	mu         sync.RWMutex
 
-	// metrics
-	retryCount       uint64 // atomic
-	deadLetterCount  uint64 // atomic
-	collisionCount   uint64 // atomic
-	indexLagGauge    uint64 // atomic (example)
+	retryCount       uint64
+	deadLetterCount  uint64
+	collisionCount   uint64
+	indexLagGauge    uint64
 	tableIDValidated bool
 }
 
@@ -50,7 +49,6 @@ func NewSearchRepository(conn ClickHouseConnection, registry *schema.SchemaRegis
 		entityRepo: NewEntityRepository(conn),
 	}
 
-	// table ID collision detection at startup: fail fast (log + metric)
 	if err := r.validateTableIDs(); err != nil {
 		log.Printf("⚠️ Table ID validation: %v", err)
 		atomic.AddUint64(&r.collisionCount, 1)
@@ -67,9 +65,7 @@ type SearchResult struct {
 	HasMore       bool                     `json:"has_more"`
 	Count         int                      `json:"count"`
 	SearchColumns []string                 `json:"search_columns,omitempty"`
-
-	// Stats for CURRENT PAGE (Visible results)
-	Aggregations map[string]int `json:"aggregations"`
+	Aggregations  map[string]int           `json:"aggregations"`
 }
 
 type SearchParams struct {
@@ -124,8 +120,6 @@ func uint64SliceToStrings(ids []uint64) []string {
 	return strs
 }
 
-// search_repository.go
-
 func (r *SearchRepository) getGlobalStatsFromHashes(hashes []uint64) map[string]uint64 {
 	if len(hashes) == 0 {
 		return make(map[string]uint64)
@@ -136,7 +130,6 @@ func (r *SearchRepository) getGlobalStatsFromHashes(hashes []uint64) map[string]
 		hashList[i] = fmt.Sprintf("%d", h)
 	}
 
-	// Use the stats table for fast UI counts
 	query := fmt.Sprintf(`
         SELECT table_name, sum(count) as count
         FROM search_token_stats
@@ -179,6 +172,7 @@ func validateTableName(name string) error {
 	return nil
 }
 
+// ⭐ UPDATED: Removed s_indx
 func (r *SearchRepository) EnsureSearchIndex(ctx context.Context, tableName string) error {
 	if !r.IsAvailable() {
 		return fmt.Errorf("clickhouse not available")
@@ -197,7 +191,6 @@ func (r *SearchRepository) EnsureSearchIndex(ctx context.Context, tableName stri
 
 	createTableSQL := fmt.Sprintf(`
     CREATE TABLE IF NOT EXISTS %s (
-        s_indx UInt64 CODEC(DoubleDelta, ZSTD(3)),
         global_id UInt64 CODEC(ZSTD(3)),
         original_data String CODEC(ZSTD(3)),
         is_deleted UInt8 DEFAULT 0,
@@ -205,19 +198,75 @@ func (r *SearchRepository) EnsureSearchIndex(ctx context.Context, tableName stri
         updated_at DateTime CODEC(DoubleDelta, ZSTD(3))
     ) ENGINE = ReplacingMergeTree(updated_at)
     PARTITION BY toYYYYMM(updated_at)
-    ORDER BY (global_id, s_indx)
+    ORDER BY (global_id)
     SETTINGS index_granularity = 16384
 `, indexTableName)
 
 	return r.conn.Exec(ctx, createTableSQL)
 }
 
-// ⭐ BulkIndex Modified for Strict Atomicity Support + sub-batching tokens
-// This function attempts to index. If Token Batch fails, it returns an error.
-// The caller (CDCManager) is responsible for retrying the whole chunk.
-// search_repository.go
+// ⭐ Smart Tokenizer
+func (r *SearchRepository) extractSearchableTokens(record map[string]interface{}, table *schema.TableInfo, pkCol string) []string {
+	var tokens []string
 
-// search_repository.go
+	// Columns to strictly ignore (system/junk)
+	// We ignore UUIDs by type later, but names help for timestamp columns
+	ignoredCols := map[string]bool{
+		"created_at": true,
+		"updated_at": true,
+		"deleted_at": true,
+	}
+
+	for _, col := range table.Columns {
+		// 1. Skip System Columns
+		if ignoredCols[col.Name] {
+			continue
+		}
+
+		// 2. Skip Primary Key (Junk token for search)
+		if col.Name == pkCol {
+			continue
+		}
+
+		val, ok := record[col.Name]
+		if !ok || val == nil {
+			continue
+		}
+
+		// 3. Process by Data Type
+		switch strings.ToLower(col.DataType) {
+		case "text", "character varying", "varchar", "char":
+			// Index Text
+			if str, ok := val.(string); ok {
+				tokens = append(tokens, strings.Fields(strings.ToLower(str))...)
+			}
+
+		case "integer", "bigint", "smallint", "int", "int2", "int4", "int8":
+			// Index Integers (Statuses, FKs)
+			tokens = append(tokens, fmt.Sprintf("%d", val))
+
+		case "numeric", "decimal", "double precision", "real", "float":
+			// Index Floats (2 decimal precision)
+			if f, ok := val.(float64); ok {
+				tokens = append(tokens, fmt.Sprintf("%.2f", f))
+			} else if f, ok := val.(float32); ok {
+				tokens = append(tokens, fmt.Sprintf("%.2f", f))
+			}
+
+		case "date", "timestamp", "timestamptz":
+			// Index Dates (Searchable strings)
+			if t, ok := val.(time.Time); ok {
+				tokens = append(tokens, t.Format("2006"), t.Format("2006-01"), t.Format("2006-01-02"))
+			}
+
+		case "boolean":
+			if b, ok := val.(bool); ok {
+				tokens = append(tokens, strconv.FormatBool(b))
+			}
+		}
+	}
+	return tokens
+}
 
 func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, records []map[string]interface{}) error {
 	if !r.IsAvailable() || len(records) == 0 {
@@ -245,17 +294,16 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 	indexTableName := fmt.Sprintf("search_%s", tableName)
 	startTime := time.Now()
 
-	// 1. Main Data Batch
+	// 1. Main Data Batch (No s_indx)
 	batch, err := r.conn.PrepareBatch(ctx, fmt.Sprintf(`
-        INSERT INTO %s (s_indx, global_id, original_data, is_deleted, synced_at, updated_at)
+        INSERT INTO %s (global_id, original_data, is_deleted, synced_at, updated_at)
     `, indexTableName))
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
 	defer func() { _ = batch.Abort() }()
 
-	// 2. Token Stream Batch (Simple Types)
-	// Inserts into search_token_entity. MV handles the Bitmap aggregation.
+	// 2. Token Stream Batch
 	tokenBatch, err := r.conn.PrepareBatch(ctx, `
         INSERT INTO search_token_entity (token_hash, token, global_id, table_name, updated_at)
     `)
@@ -264,10 +312,9 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 	}
 	defer func() { _ = tokenBatch.Abort() }()
 
-	// 3. Stats Batch (Simple Types)
-	// Directly increments counters in search_token_stats.
+	// 3. Stats Batch
 	statsBatch, err := r.conn.PrepareBatch(ctx, `
-        INSERT INTO search_token_stats (token_hash, table_name, count, updated_at)
+        INSERT INTO search_token_stats (token_hash, token, table_name, count, updated_at)
     `)
 	if err != nil {
 		return fmt.Errorf("failed to prepare stats batch: %w", err)
@@ -283,15 +330,15 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 			continue
 		}
 
-		s_indx := getUint64FromInterface(pkValueRaw)
-		if s_indx == 0 {
+		pkVal := getUint64FromInterface(pkValueRaw)
+		if pkVal == 0 {
 			continue
 		}
 
-		global_id := generateCompactGlobalID(tableID, s_indx)
+		global_id := generateCompactGlobalID(tableID, pkVal)
 
-		searchText := r.extractSearchableText(record, table)
-		tokens := strings.Fields(searchText)
+		// ⭐ Use Smart Tokenizer
+		tokens := r.extractSearchableTokens(record, table, pkCol)
 
 		var updatedAt time.Time
 		if val, ok := record["updated_at"].(time.Time); ok {
@@ -310,40 +357,37 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 
 		originalData, _ := json.Marshal(record)
 
-		// Append Main
-		if err := batch.Append(s_indx, global_id, string(originalData), isDeleted, now, updatedAt); err != nil {
+		// Append Main (No s_indx)
+		if err := batch.Append(global_id, string(originalData), isDeleted, now, updatedAt); err != nil {
 			return fmt.Errorf("failed to append main batch: %w", err)
 		}
 
 		// Process Tokens
-		// Use a local cache to dedup tokens within the same record (so "error error" counts as 1 stat)
 		seenTokens := make(map[uint64]bool)
 
 		for _, token := range tokens {
-			if len(token) < 2 {
+			if len(token) < 2 { // Skip single char noise
 				continue
 			}
 
 			tokenLower := strings.ToLower(token)
 			tokenHash := hashToken(tokenLower)
 
-			// 1. Insert into Token Stream (triggers MV)
+			// 1. Token Stream
 			if err := tokenBatch.Append(tokenHash, tokenLower, global_id, tableName, now); err != nil {
-				// Log warning but usually continue
 				log.Printf("warn: failed token append: %v", err)
 			}
 
-			// 2. Insert into Stats (if not seen in this record)
+			// 2. Stats (Deduplicated per record)
 			if !seenTokens[tokenHash] {
 				seenTokens[tokenHash] = true
-				if err := statsBatch.Append(tokenHash, tableName, 1, now); err != nil {
+				if err := statsBatch.Append(tokenHash, tokenLower, tableName, 1, now); err != nil {
 					log.Printf("warn: failed stats append: %v", err)
 				}
 			}
 		}
 	}
 
-	// Send all batches
 	if err := batch.Send(); err != nil {
 		return fmt.Errorf("main batch send failed: %w", err)
 	}
@@ -410,8 +454,8 @@ func (r *SearchRepository) getTableIDDeterministic(tableName string) uint16 {
 	return uint16(hash >> 48)
 }
 
-func generateCompactGlobalID(tableID uint16, s_indx uint64) uint64 {
-	return (uint64(tableID) << 48) | (s_indx & 0xFFFFFFFFFFFF)
+func generateCompactGlobalID(tableID uint16, localID uint64) uint64 {
+	return (uint64(tableID) << 48) | (localID & 0xFFFFFFFFFFFF)
 }
 
 func hashToken(token string) uint64 {
@@ -420,87 +464,17 @@ func hashToken(token string) uint64 {
 	return h.Sum64()
 }
 
+// Legacy function kept for compatibility if needed elsewhere
 func (r *SearchRepository) extractSearchableText(record map[string]interface{}, table *schema.TableInfo) string {
-	var textParts []string
-	for _, col := range table.Columns {
-		if col.DataType == "character varying" || col.DataType == "text" {
-			if val, ok := record[col.Name]; ok && val != nil {
-				textParts = append(textParts, fmt.Sprintf("%v", val))
-			}
-		}
-	}
-	return strings.ToLower(strings.Join(textParts, " "))
+	return ""
 }
 
 func (r *SearchRepository) BulkIndexTokens(ctx context.Context, tableName string, records []map[string]interface{}) error {
-	// This function is legacy/superseded by BulkIndex for atomic sync, but kept for compatibility
-	if len(records) == 0 {
-		return nil
-	}
-
-	table := r.registry.GetTable(tableName)
-	if table == nil {
-		return fmt.Errorf("table not found: %s", tableName)
-	}
-
-	pkCol := "id"
-	if len(table.PrimaryKey) > 0 {
-		pkCol = table.PrimaryKey[0]
-	}
-
-	tokenBatch, err := r.conn.PrepareBatch(ctx, `
-        INSERT INTO search_token_entity (token_hash, token, global_id, updated_at, table_name)
-    `)
-	if err != nil {
-		return err
-	}
-
-	tableID := r.getTableIDDeterministic(tableName)
-
-	for _, record := range records {
-		pkValueRaw, ok := record[pkCol]
-		if !ok {
-			continue
-		}
-
-		s_indx := getUint64FromInterface(pkValueRaw)
-		if s_indx == 0 {
-			continue
-		}
-
-		global_id := generateCompactGlobalID(tableID, s_indx)
-		searchText := r.extractSearchableText(record, table)
-		tokens := strings.Fields(searchText)
-
-		var updatedAt time.Time
-		if val, ok := record["updated_at"].(time.Time); ok {
-			updatedAt = val
-		} else {
-			updatedAt = time.Now()
-		}
-
-		for _, token := range tokens {
-			if len(token) < 2 {
-				continue
-			}
-			tokenBatch.Append(
-				hashToken(token),
-				strings.ToLower(token),
-				global_id,
-				updatedAt,
-				tableName,
-			)
-		}
-	}
-
-	return tokenBatch.Send()
+	// Deprecated
+	return nil
 }
 
-// ⭐ MAIN SEARCH FUNCTION: INFINITE SCROLL (Search-After Pattern)
-// search_repository.go
-
-// In search_repository.go
-
+// ⭐ SEARCH FUNCTION
 func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTerm string, limit int, cursor string) (*SearchResult, error) {
 	searchTerm = strings.ToLower(strings.TrimSpace(searchTerm))
 	tokens := strings.Fields(searchTerm)
@@ -509,42 +483,30 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 		return &SearchResult{Data: []map[string]interface{}{}}, nil
 	}
 
-	// 1. Get Token Hashes
 	var tokenHashes []uint64
 	for _, t := range tokens {
 		tokenHashes = append(tokenHashes, hashToken(t))
 	}
 
-	// 2. Decode Cursor
 	c, _ := unmarshalCursor(cursor)
 
-	// 3. Construct Bitmap Query
 	var bitmapQuery string
 
 	if len(tokenHashes) == 1 {
-		// Single token: We just want the bitmap state directly
-		// Note: We use groupBitmapMergeState here too for consistency,
-		// or just select the column if we were querying the raw table directly,
-		// but since we might have multiple rows per hash (merged by background process),
-		// merging the state is safest.
 		bitmapQuery = fmt.Sprintf(`
         SELECT groupBitmapMergeState(ids_bitmap)
         FROM search_token_bitmap 
         WHERE token_hash = %d 
     `, tokenHashes[0])
 	} else {
-		// Multiple tokens: Intersect logic
 		var views []string
 		for i, hash := range tokenHashes {
 			views = append(views, fmt.Sprintf(
-				// ⭐ FIX: Changed groupBitmapMerge -> groupBitmapMergeState
-				// This returns the Bitmap object (State) instead of the Count (UInt64)
 				"(SELECT groupBitmapMergeState(ids_bitmap) FROM search_token_bitmap WHERE token_hash = %d) as b%d",
 				hash, i,
 			))
 		}
 
-		// Join them: SELECT bitmapAnd(b0, bitmapAnd(b1, b2))
 		intersection := "b0"
 		for i := 1; i < len(views); i++ {
 			intersection = fmt.Sprintf("bitmapAnd(%s, b%d)", intersection, i)
@@ -553,8 +515,6 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 		bitmapQuery = fmt.Sprintf("SELECT %s FROM (SELECT %s)", intersection, strings.Join(views, ", "))
 	}
 
-	// 4. Final Query with Cursor
-	// We wrap the result in ifNull to handle empty searches gracefully.
 	finalQuery := fmt.Sprintf(`
     SELECT arrayJoin(bitmapToArray(ifNull(
         (%s),
@@ -562,7 +522,6 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
     ))) as global_id
 `, bitmapQuery)
 
-	// Add Cursor Logic
 	var whereClause string
 	if c.LastGlobalID != "" {
 		parsedID, err := strconv.ParseUint(c.LastGlobalID, 10, 64)
@@ -571,7 +530,6 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 		}
 	}
 
-	// Apply Limit + 1 for pagination check
 	query := fmt.Sprintf(`
     SELECT global_id FROM (
         %s
@@ -587,8 +545,6 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 	}
 	defer rows.Close()
 
-	// ... (rest of the function remains exactly the same) ...
-	// 5. Collect IDs
 	var globalIDs []uint64
 	for rows.Next() {
 		var id uint64
@@ -607,7 +563,6 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 		}, nil
 	}
 
-	// 6. Resolve Global IDs to Tables
 	idsByTable := make(map[string][]uint64)
 	for _, gid := range globalIDs {
 		tid := extractTableID(gid)
@@ -619,7 +574,6 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 		idsByTable[tableName] = append(idsByTable[tableName], gid)
 	}
 
-	// 7. Batched Data Fetch
 	var allRecords []map[string]interface{}
 	var wgData sync.WaitGroup
 	var muData sync.Mutex
@@ -632,8 +586,9 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 			idStrs := uint64SliceToStrings(tIds)
 			inClause := strings.Join(idStrs, ",")
 
+			// ⭐ UPDATED: Query only needed columns (no s_indx)
 			lookupQuery := fmt.Sprintf(`
-            SELECT original_data, updated_at, s_indx, global_id
+            SELECT original_data, updated_at, global_id
             FROM search_%s
             WHERE global_id IN (%s) AND is_deleted = 0
             ORDER BY global_id DESC
@@ -648,10 +603,9 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 			for dataRows.Next() {
 				var data string
 				var t time.Time
-				var id uint64
 				var globalID uint64
 
-				if err := dataRows.Scan(&data, &t, &id, &globalID); err != nil {
+				if err := dataRows.Scan(&data, &t, &globalID); err != nil {
 					continue
 				}
 
@@ -660,10 +614,13 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 					continue
 				}
 
+				// ⭐ Reconstruct ID for UI
+				localID := extractLocalID(globalID)
+
 				record["_source_table"] = tName
 				record["updated_at"] = t
-				record["s_indx"] = id
-				record["global_id"] = globalID
+				record["id"] = localID // Return standard ID
+				record["global_id"] = strconv.FormatUint(globalID, 10)
 
 				muData.Lock()
 				allRecords = append(allRecords, record)
@@ -673,10 +630,19 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 	}
 	wgData.Wait()
 
+	// ... (inside SearchFullHistoryBitmap, after wgData.Wait()) ...
+
 	// 8. Final Sort by Global ID DESC
+	// FIX: Parse strings back to uint64 for correct numeric sorting
 	sort.Slice(allRecords, func(i, j int) bool {
-		idI, _ := allRecords[i]["global_id"].(uint64)
-		idJ, _ := allRecords[j]["global_id"].(uint64)
+		var idI, idJ uint64
+		// Parse string to uint64
+		if s, ok := allRecords[i]["global_id"].(string); ok {
+			idI, _ = strconv.ParseUint(s, 10, 64)
+		}
+		if s, ok := allRecords[j]["global_id"].(string); ok {
+			idJ, _ = strconv.ParseUint(s, 10, 64)
+		}
 		return idI > idJ
 	})
 
@@ -690,7 +656,12 @@ func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTe
 	var nextCursor string
 	if len(allRecords) > 0 {
 		lastRecord := allRecords[len(allRecords)-1]
-		lastGlobalID, _ := lastRecord["global_id"].(uint64)
+
+		// FIX: global_id is now a string, extract it
+		var lastGlobalID uint64
+		if idStr, ok := lastRecord["global_id"].(string); ok {
+			lastGlobalID, _ = strconv.ParseUint(idStr, 10, 64)
+		}
 
 		if hasMore {
 			nextCursor, _ = marshalCursor(SearchCursor{LastGlobalID: fmt.Sprintf("%d", lastGlobalID)})
@@ -739,12 +710,13 @@ func (r *SearchRepository) DeleteRecord(ctx context.Context, tableName string, i
 
 	indexTableName := fmt.Sprintf("search_%s", tableName)
 
+	// ⭐ UPDATED: No s_indx
 	insertSQL := fmt.Sprintf(`
-        INSERT INTO %s (s_indx, global_id, original_data, is_deleted, updated_at)
-        VALUES (?, ?, '', 1, now())
+        INSERT INTO %s (global_id, original_data, is_deleted, updated_at)
+        VALUES (?, '', 1, now())
     `, indexTableName)
 
-	return r.conn.Exec(ctx, insertSQL, pkVal, globalID)
+	return r.conn.Exec(ctx, insertSQL, globalID)
 }
 
 func (r *SearchRepository) GetEntityRepository() *EntityRepository {
@@ -814,7 +786,6 @@ func extractTableID(globalID uint64) uint16 {
 	return uint16(globalID >> 48)
 }
 
-// Validate table IDs to detect collisions among deterministic uint16 ids
 func (r *SearchRepository) validateTableIDs() error {
 	seen := map[uint16]string{}
 	for _, t := range r.registry.GetAllTables() {
@@ -827,7 +798,6 @@ func (r *SearchRepository) validateTableIDs() error {
 	return nil
 }
 
-// InsertDeadLetter stores a failed chunk for later triage.
 func (r *SearchRepository) InsertDeadLetter(ctx context.Context, tableName string, startID, endID uint64, attempts uint8, lastError, sampleData string) error {
 	if err := validateTableName(tableName); err != nil {
 		return err
@@ -841,8 +811,6 @@ func (r *SearchRepository) InsertDeadLetter(ctx context.Context, tableName strin
 	}
 	return nil
 }
-
-// Metric helpers
 
 func (r *SearchRepository) IncRetryCount(n uint64) {
 	atomic.AddUint64(&r.retryCount, n)

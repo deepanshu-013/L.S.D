@@ -150,7 +150,6 @@ func main() {
 
 	mux.HandleFunc("POST /api/auth/register", authHandler.Register)
 	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck)
-	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck) // Health check usually public
 
 	// Static Files (Public)
 	fs := http.FileServer(http.Dir("./web/"))

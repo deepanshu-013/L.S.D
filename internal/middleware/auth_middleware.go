@@ -2,53 +2,74 @@ package middleware
 
 import (
 	"context"
-	"highperf-api/internal/auth"
 	"net/http"
-	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type ContextKey string
 
 const UserKey ContextKey = "user"
 
-type AuthMiddleware struct {
-	authService *auth.AuthService
+// queryDB interface now matches the exact signature of pgxpool.Pool
+type queryDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func NewAuthMiddleware(service *auth.AuthService) *AuthMiddleware {
-	return &AuthMiddleware{authService: service}
+type AuthMiddleware struct {
+	db queryDB
+}
+
+func NewAuthMiddleware(db queryDB) *AuthMiddleware {
+	return &AuthMiddleware{db: db}
 }
 
 func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var tokenString string
+		var apiKey string
 
-		// 1. Check Authorization Header (Bearer Token)
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+		// 1. Check Cookie (Browser Auto-Login)
+		cookie, err := r.Cookie("api_key")
+		if err == nil {
+			apiKey = cookie.Value
 		}
 
-		// 2. Fallback: Check URL Query Parameter (?token=...)
-		if tokenString == "" {
-			tokenString = r.URL.Query().Get("token")
+		// 2. Check Header (For external API clients / Postman)
+		if apiKey == "" {
+			apiKey = r.Header.Get("X-API-Key")
+		}
+		if apiKey == "" {
+			authHeader := r.Header.Get("Authorization")
+			if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+				apiKey = authHeader[7:]
+			}
 		}
 
-		// 3. If still no token, reject
-		if tokenString == "" {
-			http.Error(w, `{"error": "Authentication required. Use Header or ?token=..."}`, http.StatusUnauthorized)
+		// 3. No key found
+		if apiKey == "" {
+			http.Error(w, `{"error": "Authentication required. Provide X-API-Key header or login."}`, http.StatusUnauthorized)
 			return
 		}
 
-		// 4. Validate
-		claims, err := m.authService.ValidateToken(tokenString)
+		// 4. Validate Key against Database
+		var username string
+		var role string
+		query := `SELECT username, role FROM users WHERE api_key = $1`
+
+		// Use pgx.Row directly
+		row := m.db.QueryRow(r.Context(), query, apiKey)
+		err = row.Scan(&username, &role)
+
 		if err != nil {
-			http.Error(w, `{"error": "Invalid or expired token"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error": "Invalid API Key"}`, http.StatusUnauthorized)
 			return
 		}
 
-		// Inject user info into context
-		ctx := context.WithValue(r.Context(), UserKey, claims)
+		// 5. Inject user info into context
+		ctx := context.WithValue(r.Context(), UserKey, map[string]string{
+			"username": username,
+			"role":     role,
+		})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

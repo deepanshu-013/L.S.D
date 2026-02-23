@@ -119,20 +119,18 @@ func main() {
 	pipelineHandler := handlers.NewPipelineHandler(pipelineProcessor)
 
 	// ═══════════════════════════════════════════════════════════
-	// 🔐 AUTHENTICATION SETUP
+	// 🔐 AUTHENTICATION SETUP (API KEY MODE)
 	// ═══════════════════════════════════════════════════════════
 
-	// 1. Get Secret from Environment Variable
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		jwtSecret = "super-secret-dev-key-change-in-production" // Default for dev only
-		log.Println("⚠️  WARNING: Using default JWT_SECRET. Set env var JWT_SECRET for production.")
-	}
+	// 1. Initialize Auth Service (Handles Password Hashing only)
+	authService := auth.NewAuthService()
 
-	// 2. Initialize Services
-	authService := auth.NewAuthService(jwtSecret)
+	// 2. Initialize Auth Handler (Handles Login/Cookie)
 	authHandler := handlers.NewAuthHandler(pool.Pool, authService)
-	authMiddleware := middleware.NewAuthMiddleware(authService)
+
+	// 3. Initialize Auth Middleware (Validates API Key via DB)
+	// We pass the DB pool so it can query the 'users' table for api_key
+	authMiddleware := middleware.NewAuthMiddleware(pool.Pool)
 
 	// ═══════════════════════════════════════════════════════════
 	// 🌐 ROUTER SETUP
@@ -144,11 +142,14 @@ func main() {
 	// 🔓 PUBLIC ROUTES (No Token Needed)
 	// ═══════════════════════════════════════════════════════════
 
-	// Allow GET for easy browser login
+	// Login Endpoint (Sets Cookie)
 	mux.HandleFunc("GET /api/auth/login", authHandler.Login)
 	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
 
-	mux.HandleFunc("POST /api/auth/register", authHandler.Register)
+	// Registration is disabled per requirements (Manual SQL only)
+	// mux.HandleFunc("POST /api/auth/register", authHandler.Register)
+
+	// Health Check
 	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck)
 
 	// Static Files (Public)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"highperf-api/internal/auth"
 	"highperf-api/internal/cache"
 	"highperf-api/internal/clickhouse"
 	"highperf-api/internal/config"
@@ -25,7 +26,7 @@ import (
 func main() {
 	cfg := config.LoadConfig()
 	ctx := context.Background()
-	// You can also specify a font (e.g., "isometric1")
+
 	asciiart.NewFigure("L.S.D", "isometric1", true).Print()
 	log.Printf("🚀 L.S.D API Server Starting")
 	log.Println("═══════════════════════════════════════════════════════════")
@@ -53,13 +54,13 @@ func main() {
 	}
 	log.Printf("Schema loaded: %d tables discovered", len(registry.GetAllTables()))
 
-	// ⭐ NEW: Use ConnectionPool instead of single Connection (5× parallel queries)
+	// ⭐ ClickHouse Connection Pool
 	chPool, err := clickhouse.NewConnectionPool(clickhouse.Config{
 		Addr:     cfg.ClickHouseAddr,
 		Database: cfg.ClickHouseDB,
 		Username: cfg.ClickHouseUser,
 		Password: cfg.ClickHousePassword,
-	}, 5) // 🔥 5 connections for parallel search
+	}, 5)
 
 	if err != nil {
 		log.Printf("ClickHouse pool creation failed: %v", err)
@@ -67,7 +68,6 @@ func main() {
 
 	var chSearch *clickhouse.SearchRepository
 	if chPool != nil && chPool.IsAvailable() {
-		// ✅ Same constructor, now accepts pool interface
 		chSearch = clickhouse.NewSearchRepository(chPool, registry)
 		log.Println("✅ ClickHouse search repository initialized with connection pool (5 connections)")
 	} else {
@@ -81,7 +81,7 @@ func main() {
 		multiCache,
 		chSearch,
 		50, 20,
-		120*time.Second, // Increased timeout for large searches
+		120*time.Second,
 	)
 
 	// Initialize CDC Manager
@@ -103,17 +103,13 @@ func main() {
 	// Initialize Pipeline Processor
 	pipelineProcessor := pipeline.NewPipelineProcessor(pool.Pool, "./ErrorFiles")
 
-	// ✨ CONNECT PIPELINE TO CDC
 	if cdcManager != nil {
 		pipelineProcessor.SetCDCTrigger(func(tableName string) error {
 			log.Printf("🔄 Pipeline completed for table: %s, triggering CDC sync...", tableName)
-
-			// Trigger immediate sync for the new table
 			if err := cdcManager.TriggerTableSync(tableName); err != nil {
 				log.Printf("⚠️  CDC sync failed for %s: %v", tableName, err)
 				return err
 			}
-
 			log.Printf("✅ CDC sync completed for table: %s", tableName)
 			return nil
 		})
@@ -122,47 +118,75 @@ func main() {
 
 	pipelineHandler := handlers.NewPipelineHandler(pipelineProcessor)
 
+	// ═══════════════════════════════════════════════════════════
+	// 🔐 AUTHENTICATION SETUP
+	// ═══════════════════════════════════════════════════════════
+
+	// 1. Get Secret from Environment Variable
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		jwtSecret = "super-secret-dev-key-change-in-production" // Default for dev only
+		log.Println("⚠️  WARNING: Using default JWT_SECRET. Set env var JWT_SECRET for production.")
+	}
+
+	// 2. Initialize Services
+	authService := auth.NewAuthService(jwtSecret)
+	authHandler := handlers.NewAuthHandler(pool.Pool, authService)
+	authMiddleware := middleware.NewAuthMiddleware(authService)
+
+	// ═══════════════════════════════════════════════════════════
+	// 🌐 ROUTER SETUP
+	// ═══════════════════════════════════════════════════════════
+
 	mux := http.NewServeMux()
 
 	// ═══════════════════════════════════════════════════════════
-	// 🏥 HEALTH & STATUS
-	// ═══════════════════════════════════════════════════════════
-	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck)
-	mux.HandleFunc("GET /api/cdc/status", dynamicHandler.GetCDCStatus)
-
-	// ═══════════════════════════════════════════════════════════
-	// 📊 TABLES
-	// ═══════════════════════════════════════════════════════════
-	mux.HandleFunc("GET /api/tables", dynamicHandler.ListTables)
-	mux.HandleFunc("GET /api/tables/{table}/schema", dynamicHandler.GetTableSchema)
-	mux.HandleFunc("GET /api/tables/{table}/records", dynamicHandler.GetRecords)
-	mux.HandleFunc("GET /api/tables/{table}/records/{pk}", dynamicHandler.GetRecordByPK)
-	mux.HandleFunc("GET /api/tables/{table}/stats", dynamicHandler.GetTableStats)
-
-	// ═══════════════════════════════════════════════════════════
-	// 🔍 SEARCH ENDPOINTS
+	// 🔓 PUBLIC ROUTES (No Token Needed)
 	// ═══════════════════════════════════════════════════════════
 
-	// Legacy endpoints (backwards compatible)
-	// mux.HandleFunc("GET /api/search", dynamicHandler.GlobalSearch)
-	mux.HandleFunc("GET /api/tables/{table}/search", dynamicHandler.SearchRecords)
+	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
+	mux.HandleFunc("POST /api/auth/register", authHandler.Register) // ⚠️ Disable this in production after creating admin
+	mux.HandleFunc("GET /api/health", dynamicHandler.HealthCheck)   // Health check usually public
 
-	// ⭐ NEW: Optimized endpoints (5-30× faster)
-	mux.HandleFunc("GET /api/search/", dynamicHandler.SearchOptimized)
-	// ═══════════════════════════════════════════════════════════
-	// 📥 PIPELINE
-	// ═══════════════════════════════════════════════════════════
-	mux.HandleFunc("POST /api/pipeline/start", pipelineHandler.StartJob)
-	mux.HandleFunc("GET /api/pipeline/jobs/{job_id}", pipelineHandler.GetJobStatus)
-	mux.HandleFunc("GET /api/pipeline/jobs", pipelineHandler.ListJobs)
-	mux.HandleFunc("GET /api/pipeline/jobs/{job_id}/stream", pipelineHandler.StreamJobProgress)
-	mux.HandleFunc("GET /api/pipeline/jobs/{job_id}/logs", pipelineHandler.GetJobLogs)
-
-	// ═══════════════════════════════════════════════════════════
-	// 🌐 STATIC FILES
-	// ═══════════════════════════════════════════════════════════
+	// Static Files (Public)
 	fs := http.FileServer(http.Dir("./web/"))
-	mux.Handle("/", http.StripPrefix("/", fs))
+	mux.Handle("/web/", http.StripPrefix("/web/", fs))
+
+	// ═══════════════════════════════════════════════════════════
+	// 🔒 PROTECTED ROUTES (Token Required)
+	// ═══════════════════════════════════════════════════════════
+
+	// We create a sub-mux for protected routes
+	protectedMux := http.NewServeMux()
+
+	// Table Endpoints
+	protectedMux.HandleFunc("GET /api/tables", dynamicHandler.ListTables)
+	protectedMux.HandleFunc("GET /api/tables/{table}/schema", dynamicHandler.GetTableSchema)
+	protectedMux.HandleFunc("GET /api/tables/{table}/records", dynamicHandler.GetRecords)
+	protectedMux.HandleFunc("GET /api/tables/{table}/records/{pk}", dynamicHandler.GetRecordByPK)
+	protectedMux.HandleFunc("GET /api/tables/{table}/stats", dynamicHandler.GetTableStats)
+	protectedMux.HandleFunc("GET /api/tables/{table}/search", dynamicHandler.SearchRecords)
+
+	// Search Endpoints (BITMAP PROTECTION)
+	protectedMux.HandleFunc("GET /api/search/", dynamicHandler.SearchOptimized)
+
+	// Pipeline Endpoints
+	protectedMux.HandleFunc("POST /api/pipeline/start", pipelineHandler.StartJob)
+	protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}", pipelineHandler.GetJobStatus)
+	protectedMux.HandleFunc("GET /api/pipeline/jobs", pipelineHandler.ListJobs)
+	protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}/stream", pipelineHandler.StreamJobProgress)
+	protectedMux.HandleFunc("GET /api/pipeline/jobs/{job_id}/logs", pipelineHandler.GetJobLogs)
+
+	// CDC Status
+	protectedMux.HandleFunc("GET /api/cdc/status", dynamicHandler.GetCDCStatus)
+
+	// Mount the protected mux, wrapping it with Auth Middleware
+	// We use "/" to catch all requests that didn't match public routes above
+	mux.Handle("/", authMiddleware.RequireAuth(protectedMux))
+
+	// ═══════════════════════════════════════════════════════════
+	// 🛡️ GLOBAL MIDDLEWARE
+	// ═══════════════════════════════════════════════════════════
 
 	handler := middleware.RateLimiter(mux)
 	handler = middleware.CORS(handler)
@@ -177,7 +201,6 @@ func main() {
 	}
 
 	go func() {
-
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed to start: %v", err)
 		}
@@ -196,7 +219,6 @@ func main() {
 		cdcManager.Stop()
 	}
 
-	// ⭐ NEW: Close connection pool
 	if chPool != nil {
 		log.Println("🔌 Closing ClickHouse connection pool...")
 		if err := chPool.Close(); err != nil {

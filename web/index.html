@@ -4,158 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>L.S.D - Large Search of Data</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <meta name="description" content="High-performance API for massive datasets. Search billions of records in milliseconds.">
+    <link rel="stylesheet" href="/style.css">
     <style>
-        /* Scalar Mars Theme - Dark Mode Colors */
-        :root {
-            --scalar-background-1: #0f0f0f;
-            --scalar-background-2: #1a1a1a;
-            --scalar-background-3: #272727;
-            --scalar-color-1: #e7e7e7;
-            --scalar-color-2: #a4a4a4;
-            --scalar-color-3: #797979;
-            --scalar-color-accent: #00aeff;
-            --scalar-background-accent: rgba(62, 166, 255, 0.12);
-            --scalar-border-color: #2d2d2d;
-            --scalar-color-green: #00b648;
-            --scalar-color-red: #dc1b19;
-            --scalar-color-purple: #b191f9;
-            
-            /* App-specific */
-            --bg-primary: var(--scalar-background-1);
-            --bg-secondary: var(--scalar-background-2);
-            --bg-tertiary: var(--scalar-background-3);
-            --text-primary: var(--scalar-color-1);
-            --text-secondary: var(--scalar-color-2);
-            --text-muted: var(--scalar-color-3);
-            --accent: var(--scalar-color-accent);
-            --accent-purple: var(--scalar-color-purple);
-            --accent-gradient: linear-gradient(135deg, var(--scalar-color-accent), #8b5cf6);
-            --border: var(--scalar-border-color);
-            --card-bg: rgba(255, 255, 255, 0.02);
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        html {
-            scroll-behavior: smooth;
-        }
-
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.6;
-            overflow-x: hidden;
-        }
-
-        /* Animated background */
-        .bg-gradient {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
-            background: 
-                radial-gradient(ellipse 60% 40% at 10% 0%, rgba(0, 174, 255, 0.08), transparent),
-                radial-gradient(ellipse 50% 30% at 90% 100%, rgba(139, 92, 246, 0.06), transparent),
-                var(--bg-primary);
-        }
-
-        /* Navigation */
-        nav {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            z-index: 100;
-            padding: 1rem 2rem;
-            backdrop-filter: blur(16px);
-            background: rgba(15, 15, 15, 0.85);
-            border-bottom: 1px solid var(--border);
-        }
-
-        .nav-container {
-            max-width: 1200px;
-            margin: 0 auto;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            text-decoration: none;
-        }
-
-        .logo-icon {
-            width: 38px;
-            height: 38px;
-            background: var(--accent-gradient);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 800;
-            font-size: 0.85rem;
-            color: #fff;
-            box-shadow: 0 0 20px rgba(0, 174, 255, 0.3);
-        }
-
-        .logo-text {
-            font-weight: 700;
-            font-size: 1.2rem;
-            color: var(--text-primary);
-            letter-spacing: -0.5px;
-        }
-
-        .nav-links {
-            display: flex;
-            align-items: center;
-            gap: 2rem;
-        }
-
-        .nav-links a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            font-size: 0.9rem;
-            font-weight: 500;
-            transition: color 0.2s;
-        }
-
-        .nav-links a:hover {
-            color: var(--accent);
-        }
-
-        .nav-btn {
-            padding: 0.6rem 1.25rem;
-            background: var(--accent-gradient);
-            border: none;
-            border-radius: 8px;
-            color: #fff;
-            font-weight: 600;
-            font-size: 0.875rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            text-decoration: none;
-            box-shadow: 0 0 20px rgba(0, 174, 255, 0.2);
-        }
-
-        .nav-btn:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 24px rgba(0, 174, 255, 0.4);
-        }
-
-        /* Hero Section */
+        /* Page-specific styles */
         .hero {
             min-height: 100vh;
             display: flex;
@@ -163,51 +15,42 @@
             justify-content: center;
             padding: 8rem 2rem 4rem;
             text-align: center;
+            position: relative;
         }
 
         .hero-content {
             max-width: 900px;
+            position: relative;
+            z-index: 1;
         }
 
-        .badge {
+        .hero-badge {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
             padding: 0.5rem 1rem;
             background: var(--card-bg);
             border: 1px solid var(--border);
-            border-radius: 100px;
+            border-radius: var(--radius-full);
             font-size: 0.85rem;
             color: var(--text-secondary);
             margin-bottom: 2rem;
         }
 
-        .badge-dot {
+        .hero-badge-dot {
             width: 8px;
             height: 8px;
-            background: var(--scalar-color-green);
+            background: var(--success);
             border-radius: 50%;
             animation: pulse 2s infinite;
         }
 
-        @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.6; transform: scale(0.9); }
-        }
-
-        h1 {
+        .hero h1 {
             font-size: clamp(2.5rem, 8vw, 4.5rem);
             font-weight: 800;
             line-height: 1.1;
             margin-bottom: 1.5rem;
             letter-spacing: -2px;
-        }
-
-        h1 .gradient {
-            background: var(--accent-gradient);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
         }
 
         .hero-description {
@@ -225,50 +68,6 @@
             flex-wrap: wrap;
         }
 
-        .btn-primary {
-            padding: 1rem 2rem;
-            background: var(--accent-gradient);
-            border: none;
-            border-radius: 10px;
-            color: #fff;
-            font-weight: 600;
-            font-size: 1rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            box-shadow: 0 0 24px rgba(0, 174, 255, 0.25);
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 32px rgba(0, 174, 255, 0.4);
-        }
-
-        .btn-secondary {
-            padding: 1rem 2rem;
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            color: var(--text-primary);
-            font-weight: 600;
-            font-size: 1rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .btn-secondary:hover {
-            background: rgba(255, 255, 255, 0.05);
-            border-color: var(--accent);
-        }
-
-        /* Stats */
         .stats {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -297,11 +96,17 @@
             margin-top: 0.25rem;
         }
 
-        /* Features Section */
+        /* Sections */
         .section {
             padding: 6rem 2rem;
             max-width: 1200px;
             margin: 0 auto;
+        }
+
+        .section-alt {
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
         }
 
         .section-header {
@@ -310,6 +115,7 @@
         }
 
         .section-tag {
+            display: inline-block;
             color: var(--accent);
             font-size: 0.85rem;
             font-weight: 600;
@@ -338,106 +144,18 @@
             gap: 1.5rem;
         }
 
-        .feature-card {
-            padding: 2rem;
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            transition: all 0.3s;
-        }
-
-        .feature-card:hover {
-            background: rgba(255, 255, 255, 0.03);
-            border-color: rgba(0, 174, 255, 0.3);
-            transform: translateY(-4px);
-        }
-
-        .feature-icon {
-            width: 48px;
-            height: 48px;
-            background: var(--scalar-background-accent);
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-            margin-bottom: 1.25rem;
-        }
-
-        .feature-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            margin-bottom: 0.75rem;
-            color: var(--text-primary);
-        }
-
-        .feature-description {
-            color: var(--text-secondary);
-            font-size: 0.95rem;
-            line-height: 1.6;
-        }
-
-        /* Code Block */
-        .code-section {
-            background: var(--bg-secondary);
-            border-top: 1px solid var(--border);
-            border-bottom: 1px solid var(--border);
-            padding: 6rem 2rem;
-        }
-
-        .code-container {
-            max-width: 900px;
+        /* Code Preview */
+        .code-preview {
+            max-width: 800px;
             margin: 0 auto;
         }
 
-        .code-header {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 1rem 1.5rem;
-            background: var(--bg-tertiary);
-            border-radius: 12px 12px 0 0;
-            border: 1px solid var(--border);
-            border-bottom: none;
+        .code-preview .code-window {
+            box-shadow: var(--shadow-lg);
         }
-
-        .code-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-        }
-
-        .code-dot.red { background: #ff5f56; }
-        .code-dot.yellow { background: #ffbd2e; }
-        .code-dot.green { background: #27ca40; }
-
-        .code-title {
-            margin-left: 1rem;
-            color: var(--text-muted);
-            font-size: 0.85rem;
-        }
-
-        .code-block {
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            border-radius: 0 0 12px 12px;
-            padding: 1.5rem;
-            overflow-x: auto;
-        }
-
-        .code-block pre {
-            font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            font-size: 0.9rem;
-            line-height: 1.7;
-            color: var(--text-secondary);
-        }
-
-        .code-block .keyword { color: var(--accent-purple); }
-        .code-block .string { color: var(--scalar-color-green); }
-        .code-block .comment { color: var(--text-muted); }
 
         /* Footer */
-        footer {
+        .footer {
             padding: 4rem 2rem;
             border-top: 1px solid var(--border);
             text-align: center;
@@ -453,13 +171,14 @@
             justify-content: center;
             gap: 2rem;
             margin-bottom: 2rem;
+            flex-wrap: wrap;
         }
 
         .footer-links a {
             color: var(--text-muted);
             text-decoration: none;
             font-size: 0.9rem;
-            transition: color 0.2s;
+            transition: color 0.2s ease;
         }
 
         .footer-links a:hover {
@@ -471,12 +190,12 @@
             font-size: 0.85rem;
         }
 
+        .footer-copy .heart {
+            color: var(--accent);
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
-            .nav-links {
-                display: none;
-            }
-
             .stats {
                 grid-template-columns: repeat(2, 1fr);
             }
@@ -485,7 +204,7 @@
                 grid-template-columns: 1fr;
             }
 
-            h1 {
+            .hero h1 {
                 font-size: 2.5rem;
             }
         }
@@ -493,30 +212,34 @@
 </head>
 <body>
     <div class="bg-gradient"></div>
+    <div class="grid-pattern"></div>
 
     <nav>
         <div class="nav-container">
             <a href="/" class="logo">
                 <div class="logo-icon">LSD</div>
-                <span class="logo-text">L.S.D</span>
+                <div>
+                    <span class="logo-text">L.S.D</span>
+                    <span class="logo-subtitle">Large Search of Data</span>
+                </div>
             </a>
             <div class="nav-links">
                 <a href="/docs">Documentation</a>
                 <a href="#features">Features</a>
                 <a href="https://github.com/Daveshvats/L.S.D" target="_blank">GitHub</a>
-                <a href="/login" class="nav-btn">Get Started</a>
+                <a href="/login" class="btn btn-primary btn-sm">Get Started</a>
             </div>
         </div>
     </nav>
 
     <section class="hero">
-        <div class="hero-content">
-            <div class="badge">
-                <span class="badge-dot"></span>
+        <div class="hero-content animate-fade-in">
+            <div class="hero-badge">
+                <span class="hero-badge-dot"></span>
                 v2.0 Now Available
             </div>
             <h1>
-                Search <span class="gradient">Billions</span> of Records<br>
+                Search <span class="text-gradient">Billions</span> of Records<br>
                 in Milliseconds
             </h1>
             <p class="hero-description">
@@ -525,11 +248,11 @@
                 across PostgreSQL and ClickHouse.
             </p>
             <div class="hero-buttons">
-                <a href="/docs" class="btn-primary">
-                    <span>📚</span> View Documentation
+                <a href="/docs" class="btn btn-primary btn-lg">
+                    📚 View Documentation
                 </a>
-                <a href="/login" class="btn-secondary">
-                    <span>🚀</span> Get API Key
+                <a href="/login" class="btn btn-secondary btn-lg">
+                    🚀 Get API Key
                 </a>
             </div>
 
@@ -556,7 +279,7 @@
 
     <section class="section" id="features">
         <div class="section-header">
-            <div class="section-tag">Features</div>
+            <span class="section-tag">Features</span>
             <h2 class="section-title">Built for Scale</h2>
             <p class="section-description">
                 Everything you need to search, filter, and analyze massive datasets with ease.
@@ -564,65 +287,67 @@
         </div>
 
         <div class="features-grid">
-            <div class="feature-card">
-                <div class="feature-icon">⚡</div>
-                <h3 class="feature-title">Blazing Fast Search</h3>
-                <p class="feature-description">
+            <div class="card">
+                <div class="card-icon">⚡</div>
+                <h3 class="card-title">Blazing Fast Search</h3>
+                <p class="card-description">
                     Powered by ClickHouse bitmap indexing for sub-50ms searches across billions of records.
                 </p>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">🔐</div>
-                <h3 class="feature-title">Secure Authentication</h3>
-                <p class="feature-description">
+            <div class="card">
+                <div class="card-icon">🔐</div>
+                <h3 class="card-title">Secure Authentication</h3>
+                <p class="card-description">
                     JWT tokens + API keys with scoped permissions. Built-in rate limiting for AI agents.
                 </p>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">🔄</div>
-                <h3 class="feature-title">Real-time CDC</h3>
-                <p class="feature-description">
+            <div class="card">
+                <div class="card-icon">🔄</div>
+                <h3 class="card-title">Real-time CDC</h3>
+                <p class="card-description">
                     Automatic change data capture keeps your search index synchronized with PostgreSQL.
                 </p>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">📊</div>
-                <h3 class="feature-title">Smart Caching</h3>
-                <p class="feature-description">
+            <div class="card">
+                <div class="card-icon">📊</div>
+                <h3 class="card-title">Smart Caching</h3>
+                <p class="card-description">
                     Multi-layer caching with Redis for frequently accessed data and query results.
                 </p>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">🤖</div>
-                <h3 class="feature-title">AI Agent Ready</h3>
-                <p class="feature-description">
+            <div class="card">
+                <div class="card-icon">🤖</div>
+                <h3 class="card-title">AI Agent Ready</h3>
+                <p class="card-description">
                     High rate limits (5000 req/min), predictable JSON responses, and comprehensive docs.
                 </p>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">🚀</div>
-                <h3 class="feature-title">Data Pipelines</h3>
-                <p class="feature-description">
+            <div class="card">
+                <div class="card-icon">🚀</div>
+                <h3 class="card-title">Data Pipelines</h3>
+                <p class="card-description">
                     Built-in pipeline processor for CSV imports with validation and error handling.
                 </p>
             </div>
         </div>
     </section>
 
-    <section class="code-section">
-        <div class="section-header">
-            <div class="section-tag">Quick Start</div>
-            <h2 class="section-title">Start in Seconds</h2>
-        </div>
-        <div class="code-container">
-            <div class="code-header">
-                <span class="code-dot red"></span>
-                <span class="code-dot yellow"></span>
-                <span class="code-dot green"></span>
-                <span class="code-title">api-request.sh</span>
+    <section class="section-alt">
+        <div class="section">
+            <div class="section-header">
+                <span class="section-tag">Quick Start</span>
+                <h2 class="section-title">Start in Seconds</h2>
             </div>
-            <div class="code-block">
-                <pre><span class="comment"># Search across billions of records</span>
+            <div class="code-preview">
+                <div class="code-window">
+                    <div class="code-header">
+                        <span class="code-dot red"></span>
+                        <span class="code-dot yellow"></span>
+                        <span class="code-dot green"></span>
+                        <span class="code-title">api-request.sh</span>
+                    </div>
+                    <div class="code-content">
+                        <pre><span class="comment"># Search across billions of records</span>
 <span class="keyword">curl</span> <span class="string">"http://localhost:8080/api/search/?q=john"</span> \
   -H <span class="string">"X-API-Key: lsd_live_your_api_key"</span>
 
@@ -632,15 +357,56 @@
     <span class="string">"users"</span>: [...],
     <span class="string">"orders"</span>: [...]
   },
-  <span class="string">"total_results"</span>: 1523,
-  <span class="string">"search_time"</span>: 42,
-  <span class="string">"has_more"</span>: true
+  <span class="string">"total_results"</span>: <span class="number">1523</span>,
+  <span class="string">"search_time_ms"</span>: <span class="number">42</span>
 }</pre>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
 
-    <footer>
+    <section class="section">
+        <div class="section-header">
+            <span class="section-tag">AI Ready</span>
+            <h2 class="section-title">Built for AI Agents</h2>
+            <p class="section-description">
+                Designed with AI agents and automation workflows in mind. High rate limits, 
+                predictable responses, and comprehensive error handling.
+            </p>
+        </div>
+        <div style="max-width: 600px; margin: 0 auto; text-align: left;">
+            <div class="card" style="margin-bottom: 1rem;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div class="badge badge-success">✓</div>
+                    <div>
+                        <strong>5,000 requests/minute</strong>
+                        <p class="card-description" style="margin: 0;">High rate limits for AI agents</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card" style="margin-bottom: 1rem;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div class="badge badge-success">✓</div>
+                    <div>
+                        <strong>Scoped API Keys</strong>
+                        <p class="card-description" style="margin: 0;">Granular access control for different use cases</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div class="badge badge-success">✓</div>
+                    <div>
+                        <strong>Predictable JSON Responses</strong>
+                        <p class="card-description" style="margin: 0;">Consistent schema for easy parsing</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
         <div class="footer-content">
             <div class="footer-links">
                 <a href="/docs">Documentation</a>
@@ -649,9 +415,18 @@
                 <a href="https://github.com/Daveshvats/L.S.D" target="_blank">GitHub</a>
             </div>
             <p class="footer-copy">
-                © 2025 L.S.D - Large Search of Data. Built with ❤️ for scale.
+                © 2025 L.S.D - Large Search of Data. Built with <span class="heart">❤️</span> for scale.
             </p>
         </div>
     </footer>
+
+    <script>
+        // Theme management
+        function initTheme() {
+            const savedTheme = localStorage.getItem('lsd-theme') || 'dark';
+            document.body.classList.toggle('light-mode', savedTheme === 'light');
+        }
+        initTheme();
+    </script>
 </body>
 </html>

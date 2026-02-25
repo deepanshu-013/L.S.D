@@ -47,7 +47,7 @@ info:
     url: https://opensource.org/licenses/MIT
 
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:5000
     description: Local development server
   - url: https://api.lsd.local
     description: Production server

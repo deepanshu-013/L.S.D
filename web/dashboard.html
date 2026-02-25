@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - L.S.D API</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0f0f0f;
+            --bg-secondary: #161616;
+            --bg-tertiary: #1c1c1c;
+            --text-primary: #ffffff;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent: #a855f7;
+            --accent-secondary: #7c3aed;
+            --accent-gradient: linear-gradient(135deg, #a855f7, #7c3aed);
+            --border: rgba(255, 255, 255, 0.08);
+            --card-bg: rgba(255, 255, 255, 0.03);
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* Background */
+        .bg-gradient {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background: 
+                radial-gradient(ellipse 50% 30% at 10% 10%, rgba(255, 102, 204, 0.08), transparent),
+                radial-gradient(ellipse 40% 30% at 90% 90%, rgba(204, 102, 255, 0.05), transparent),
+                var(--bg-primary);
+        }
+
+        /* Navigation */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 1rem 2rem;
+            backdrop-filter: blur(12px);
+            background: rgba(10, 10, 11, 0.8);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .nav-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: var(--accent-gradient);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 0.85rem;
+            color: #000;
+        }
+
+        .logo-text {
+            font-weight: 700;
+            font-size: 1.1rem;
+            color: var(--text-primary);
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover {
+            color: var(--text-primary);
+        }
+
+        /* Main Content */
+        main {
+            padding: 6rem 2rem 2rem;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .dashboard-header {
+            margin-bottom: 2.5rem;
+        }
+
+        .dashboard-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.5px;
+        }
+
+        .dashboard-subtitle {
+            color: var(--text-secondary);
+            font-size: 1rem;
+        }
+
+        /* Grid Layout */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 1024px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Cards */
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-title {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .card-icon {
+            width: 36px;
+            height: 36px;
+            background: rgba(255, 102, 204, 0.15);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1rem;
+        }
+
+        /* User Profile */
+        .user-avatar {
+            width: 64px;
+            height: 64px;
+            background: var(--accent-gradient);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #000;
+            margin-bottom: 1.25rem;
+        }
+
+        .user-name {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .user-email {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .user-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .user-stat {
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .user-stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .user-stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 0.25rem;
+        }
+
+        .info-list {
+            display: grid;
+            gap: 1rem;
+        }
+
+        .info-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .info-item:last-child {
+            border-bottom: none;
+        }
+
+        .info-label {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .info-value {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        /* Badge */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.375rem 0.75rem;
+            border-radius: 100px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-admin {
+            background: rgba(255, 102, 204, 0.15);
+            color: var(--accent);
+            border: 1px solid rgba(255, 102, 204, 0.3);
+        }
+
+        .badge-user {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 0.625rem 1.25rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--accent-gradient);
+            color: #000;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 15px rgba(255, 102, 204, 0.3);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--error);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-icon {
+            padding: 0.5rem;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .btn-icon:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+        }
+
+        .btn-full {
+            width: 100%;
+            justify-content: center;
+        }
+
+        /* API Keys List */
+        .api-key-list {
+            display: grid;
+            gap: 1rem;
+        }
+
+        .api-key-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.25rem;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            transition: all 0.2s;
+        }
+
+        .api-key-item:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 102, 204, 0.3);
+        }
+
+        .api-key-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .api-key-icon {
+            width: 44px;
+            height: 44px;
+            background: rgba(255, 102, 204, 0.1);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .api-key-details h4 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin-bottom: 0.375rem;
+        }
+
+        .api-key-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+
+        .api-key-meta code {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 0.125rem 0.5rem;
+            border-radius: 4px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .api-key-scopes {
+            display: flex;
+            gap: 0.375rem;
+            margin-top: 0.5rem;
+        }
+
+        .scope-tag {
+            padding: 0.25rem 0.5rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .api-key-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 3rem 2rem;
+        }
+
+        .empty-state-icon {
+            font-size: 3.5rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        .empty-state-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .empty-state-text {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+            z-index: 1000;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.75rem;
+            width: 100%;
+            max-width: 420px;
+        }
+
+        .modal-header {
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.375rem;
+        }
+
+        .modal-subtitle {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .modal-body {
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-footer {
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .modal-footer .btn {
+            flex: 1;
+            justify-content: center;
+        }
+
+        /* Form Elements */
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .form-label {
+            display: block;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(255, 102, 204, 0.15);
+        }
+
+        .form-hint {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            margin-top: 0.375rem;
+        }
+
+        /* Scope Selector */
+        .scope-selector {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .scope-btn {
+            padding: 0.5rem 1rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .scope-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .scope-btn.selected {
+            background: rgba(255, 102, 204, 0.15);
+            color: var(--accent);
+            border-color: rgba(255, 102, 204, 0.3);
+        }
+
+        /* Key Display */
+        .key-display {
+            background: rgba(255, 102, 204, 0.1);
+            border: 1px solid rgba(255, 102, 204, 0.3);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .warning-banner {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            border-radius: 8px;
+            padding: 0.875rem 1rem;
+            color: var(--warning);
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            padding: 1rem 1.5rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            display: none;
+            align-items: center;
+            gap: 0.75rem;
+            z-index: 1001;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .toast.show {
+            display: flex;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateY(20px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-gradient"></div>
+
+    <nav>
+        <div class="nav-container">
+            <a href="/" class="logo">
+                <div class="logo-icon">LSD</div>
+                <span class="logo-text">Dashboard</span>
+            </a>
+            <div class="nav-links">
+                <a href="/docs">📚 Docs</a>
+                <a href="/" class="btn btn-secondary">← Back Home</a>
+            </div>
+        </div>
+    </nav>
+
+    <main>
+        <div class="dashboard-header">
+            <h1 class="dashboard-title">Dashboard</h1>
+            <p class="dashboard-subtitle">Manage your API keys and account settings</p>
+        </div>
+
+        <div class="dashboard-grid">
+            <!-- User Profile Card -->
+            <div class="card">
+                <div class="user-avatar" id="user-avatar">-</div>
+                <div class="user-name" id="user-name">Loading...</div>
+                <div class="user-email" id="user-email">-</div>
+
+                <div class="user-stats">
+                    <div class="user-stat">
+                        <div class="user-stat-value" id="keys-count">0</div>
+                        <div class="user-stat-label">API Keys</div>
+                    </div>
+                    <div class="user-stat">
+                        <div class="user-stat-value" id="user-role-badge">User</div>
+                        <div class="user-stat-label">Role</div>
+                    </div>
+                </div>
+
+                <div class="info-list">
+                    <div class="info-item">
+                        <span class="info-label">Username</span>
+                        <span class="info-value" id="user-username">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Member Since</span>
+                        <span class="info-value" id="user-created">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Auth Type</span>
+                        <span class="info-value" id="user-auth-type">-</span>
+                    </div>
+                </div>
+
+                <button class="btn btn-secondary btn-full" style="margin-top: 1.5rem;" onclick="logout()">
+                    Sign Out
+                </button>
+            </div>
+
+            <!-- API Keys Section -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <div class="card-icon">🔑</div>
+                        API Keys
+                    </div>
+                    <button class="btn btn-primary" onclick="showCreateModal()">
+                        + Create Key
+                    </button>
+                </div>
+
+                <div class="api-key-list" id="api-key-list">
+                    <!-- API keys loaded here -->
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Create API Key Modal -->
+    <div class="modal-overlay" id="create-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Create API Key</h3>
+                <p class="modal-subtitle">Generate a new API key for authentication</p>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Key Name</label>
+                    <input type="text" id="key-name" class="form-input" placeholder="e.g., Production Bot">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description (optional)</label>
+                    <input type="text" id="key-description" class="form-input" placeholder="e.g., For automated pipelines">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Scopes</label>
+                    <div class="scope-selector" id="scope-selector">
+                        <button type="button" class="scope-btn selected" data-scope="read">read</button>
+                        <button type="button" class="scope-btn selected" data-scope="search">search</button>
+                        <button type="button" class="scope-btn" data-scope="write">write</button>
+                        <button type="button" class="scope-btn" data-scope="pipeline">pipeline</button>
+                    </div>
+                    <p class="form-hint">Select the permissions for this key</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Rate Limit (requests/minute)</label>
+                    <input type="number" id="key-rate-limit" class="form-input" value="5000" min="1" max="50000">
+                    <p class="form-hint">AI agents: up to 50,000/min</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeCreateModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="createApiKey()">Create Key</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Show Key Modal -->
+    <div class="modal-overlay" id="show-key-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">🎉 API Key Created!</h3>
+                <p class="modal-subtitle">Copy your key now - it won't be shown again</p>
+            </div>
+            <div class="modal-body">
+                <div class="warning-banner">
+                    ⚠️ Store this key securely. You won't be able to see it again.
+                </div>
+                <div class="key-display" id="new-key-display"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeShowKeyModal()">Done</button>
+                <button class="btn btn-primary" onclick="copyKey()">📋 Copy Key</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast">
+        <span id="toast-message"></span>
+    </div>
+
+    <script>
+        let currentUser = null;
+        let currentKey = null;
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadUserInfo();
+            await loadApiKeys();
+            setupScopeButtons();
+        });
+
+        async function loadUserInfo() {
+            try {
+                const response = await fetch('/api/auth/me');
+                if (!response.ok) {
+                    window.location.href = '/login';
+                    return;
+                }
+                const data = await response.json();
+                currentUser = data.user;
+
+                // Update UI
+                const initials = currentUser.username.substring(0, 2).toUpperCase();
+                document.getElementById('user-avatar').textContent = initials;
+                document.getElementById('user-name').textContent = currentUser.name || currentUser.username;
+                document.getElementById('user-email').textContent = currentUser.email;
+                document.getElementById('user-username').textContent = currentUser.username;
+                document.getElementById('user-created').textContent = new Date(currentUser.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+                document.getElementById('user-auth-type').textContent = currentUser.authType || 'jwt';
+                
+                const roleBadge = document.getElementById('user-role-badge');
+                roleBadge.textContent = currentUser.role.charAt(0).toUpperCase() + currentUser.role.slice(1);
+            } catch (error) {
+                console.error('Failed to load user info:', error);
+                window.location.href = '/login';
+            }
+        }
+
+        async function loadApiKeys() {
+            try {
+                const response = await fetch('/api/auth/api-keys');
+                const data = await response.json();
+                renderApiKeys(data.apiKeys || []);
+                document.getElementById('keys-count').textContent = (data.apiKeys || []).length;
+            } catch (error) {
+                console.error('Failed to load API keys:', error);
+            }
+        }
+
+        function renderApiKeys(keys) {
+            const container = document.getElementById('api-key-list');
+
+            if (keys.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔐</div>
+                        <div class="empty-state-title">No API Keys Yet</div>
+                        <p class="empty-state-text">Create your first API key to start using the API</p>
+                        <button class="btn btn-primary" onclick="showCreateModal()">+ Create API Key</button>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = keys.map(key => `
+                <div class="api-key-item">
+                    <div class="api-key-info">
+                        <div class="api-key-icon">🔑</div>
+                        <div class="api-key-details">
+                            <h4>${escapeHtml(key.name)}</h4>
+                            <div class="api-key-meta">
+                                <code>${escapeHtml(key.keyPrefix)}...</code>
+                                <span>•</span>
+                                <span>${key.rateLimit.toLocaleString()}/min</span>
+                                ${key.lastUsedAt ? `<span>•</span><span>Used ${formatDate(key.lastUsedAt)}</span>` : ''}
+                            </div>
+                            <div class="api-key-scopes">
+                                ${key.scopes.map(s => `<span class="scope-tag">${escapeHtml(s)}</span>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="api-key-actions">
+                        <button class="btn-icon" onclick="revokeApiKey('${escapeHtml(key.id)}')" title="Revoke key">
+                            🗑️
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function setupScopeButtons() {
+            document.querySelectorAll('.scope-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    btn.classList.toggle('selected');
+                });
+            });
+        }
+
+        function showCreateModal() {
+            document.getElementById('create-modal').classList.add('active');
+            document.getElementById('key-name').value = '';
+            document.getElementById('key-description').value = '';
+            document.getElementById('key-rate-limit').value = '5000';
+            document.querySelectorAll('.scope-btn').forEach(btn => {
+                btn.classList.toggle('selected', ['read', 'search'].includes(btn.dataset.scope));
+            });
+        }
+
+        function closeCreateModal() {
+            document.getElementById('create-modal').classList.remove('active');
+        }
+
+        async function createApiKey() {
+            const name = document.getElementById('key-name').value.trim();
+            const description = document.getElementById('key-description').value.trim();
+            const rateLimit = parseInt(document.getElementById('key-rate-limit').value) || 5000;
+            const scopes = Array.from(document.querySelectorAll('.scope-btn.selected'))
+                .map(btn => btn.dataset.scope);
+
+            if (!name) {
+                showToast('Please enter a name for the API key');
+                return;
+            }
+
+            if (scopes.length === 0) {
+                showToast('Please select at least one scope');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/auth/api-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description, scopes, rateLimit })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to create API key');
+                }
+
+                currentKey = data.apiKey.key;
+                closeCreateModal();
+                showKeyModal(currentKey);
+                await loadApiKeys();
+            } catch (error) {
+                showToast(error.message);
+            }
+        }
+
+        function showKeyModal(key) {
+            document.getElementById('new-key-display').textContent = key;
+            document.getElementById('show-key-modal').classList.add('active');
+        }
+
+        function closeShowKeyModal() {
+            document.getElementById('show-key-modal').classList.remove('active');
+            currentKey = null;
+        }
+
+        function copyKey() {
+            if (currentKey) {
+                navigator.clipboard.writeText(currentKey);
+                showToast('✓ Copied to clipboard!');
+            }
+        }
+
+        async function revokeApiKey(keyId) {
+            if (!confirm('Are you sure you want to revoke this API key? This action cannot be undone.')) return;
+
+            try {
+                const response = await fetch(`/api/auth/api-keys/${keyId}`, { method: 'DELETE' });
+                
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to revoke API key');
+                }
+                
+                showToast('✓ API key revoked');
+                await loadApiKeys();
+            } catch (error) {
+                showToast(error.message);
+            }
+        }
+
+        async function logout() {
+            try {
+                await fetch('/api/auth/logout', { method: 'POST' });
+                window.location.href = '/login';
+            } catch (error) {
+                showToast('Failed to logout');
+            }
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast-message').textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatDate(dateStr) {
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diff = now - date;
+            
+            if (diff < 60000) return 'just now';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+            return date.toLocaleDateString();
+        }
+    </script>
+</body>
+</html>

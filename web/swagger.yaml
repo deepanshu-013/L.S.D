@@ -1,1384 +1,1007 @@
-openapi: 3.0.0
+openapi: 3.1.0
 info:
-  title: L.S.D - Large Search of Data
-  version: 2.0.0
+  title: L.S.D API
   description: |
-    **L.S.D** (Large Search of Data) - Production-ready API for 20B+ row databases 🚀
+    # Large Search of Data API
     
-    ## Key Features
-    - 🔥 **Hybrid Search Engine**: ClickHouse (10-100x faster) + PostgreSQL fallback
-    - 🎯 **TF-IDF Scoring**: Intelligent relevance ranking for multi-term queries
-    - ⚡ **Smart Caching**: Redis-backed with 5-minute TTL
-    - 📄 **Cursor Pagination**: Efficient for billions of rows
-    - 🔍 **Parallel Search**: Sub-second multi-table queries
-    - 📊 **ETL Pipeline**: Automated ingestion (CSV, Excel, JSON, JSONL)
-    - 🔄 **Real-time CDC**: Change Data Capture with auto-sync
-    - 💾 **Gzip Compression**: 70-90% response size reduction
+    High-performance API for searching and managing billions of records across PostgreSQL and ClickHouse.
     
-    ## Performance
-    - **Search Speed**: 10-100x faster with ClickHouse
-    - **Scalability**: Handles 20B+ rows
-    - **Throughput**: 1000+ queries/second
-    - **Latency**: Sub-second response times
+    ## Authentication
     
-    ## Architecture
-    - **PostgreSQL**: Primary OLTP data store
-    - **ClickHouse**: OLAP search and analytics engine
-    - **Redis**: High-speed caching layer
-    - **Go**: High-performance backend (1.21+)
+    The API supports two authentication methods:
     
-    ## Use Cases
-    - CRM data warehouses
-    - Customer analytics platforms
-    - Large-scale data lakes
-    - Real-time business intelligence
-    - Multi-tenant SaaS applications
+    ### 1. JWT Bearer Token
+    Include your JWT token in the Authorization header:
+    ```
+    Authorization: Bearer <your_jwt_token>
+    ```
+    
+    ### 2. API Key
+    Include your API key in the X-API-Key header:
+    ```
+    X-API-Key: lsd_live_your_api_key_here
+    ```
+    
+    ## Rate Limits
+    
+    | Client Type | Rate Limit |
+    |-------------|------------|
+    | Anonymous | 100 req/min |
+    | Authenticated User | 1,000 req/min |
+    | AI Agent (API Key) | 5,000 req/min |
+    
+    ## Scopes
+    
+    - `read` - Read access to tables and records
+    - `write` - Write access (future use)
+    - `search` - Search across all tables
+    - `pipeline` - Access to pipeline endpoints
+    - `admin` - Full administrative access
+    
+  version: 2.0.0
+  contact:
+    name: L.S.D Support
+    url: https://github.com/Daveshvats/L.S.D
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
 
 servers:
-  - url: http://localhost:5000
+  - url: http://localhost:8080
     description: Local development server
-  - url: https://api.yourdomain.com
+  - url: https://api.lsd.local
     description: Production server
 
 tags:
-  - name: System
-    description: Health checks and API information
+  - name: Authentication
+    description: User authentication and API key management
   - name: Tables
-    description: Table discovery and schema management
+    description: Table discovery and schema information
   - name: Records
-    description: Data access with pagination, sorting, and filtering
+    description: CRUD operations on table records
   - name: Search
-    description: Full-text search across tables (single and multi-table)
+    description: Full-text search across tables
   - name: Pipeline
-    description: ETL pipeline for bulk data ingestion
+    description: Data pipeline management
   - name: CDC
-    description: Change Data Capture sync status monitoring
+    description: Change Data Capture status
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from /api/auth/login
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key with prefix lsd_live_
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "1"
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        username:
+          type: string
+          example: "johndoe"
+        name:
+          type: string
+          example: "John Doe"
+        role:
+          type: string
+          enum: [user, admin, service]
+          example: "user"
+        createdAt:
+          type: string
+          format: date-time
+
+    APIKey:
+      type: object
+      properties:
+        id:
+          type: string
+        keyPrefix:
+          type: string
+          example: "lsd_live_abc12..."
+        name:
+          type: string
+          example: "Production Bot"
+        description:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [read, write, search, pipeline, admin]
+          example: ["read", "search"]
+        rateLimit:
+          type: integer
+          example: 5000
+        lastUsedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+
+    LoginRequest:
+      type: object
+      required:
+        - identifier
+        - password
+      properties:
+        identifier:
+          type: string
+          description: Email or username
+          example: "user@example.com"
+        password:
+          type: string
+          format: password
+          example: "P@ssw0rd!"
+        rememberMe:
+          type: boolean
+          default: false
+          description: Extend session to 30 days
+
+    RegisterRequest:
+      type: object
+      required:
+        - username
+        - email
+        - password
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 30
+          pattern: '^[a-zA-Z0-9_]+$'
+          example: "johndoe"
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        password:
+          type: string
+          format: password
+          description: Min 8 chars, must include uppercase, lowercase, number, and special char
+          example: "P@ssw0rd!"
+        name:
+          type: string
+          example: "John Doe"
+
+    CreateAPIKeyRequest:
+      type: object
+      required:
+        - name
+        - scopes
+      properties:
+        name:
+          type: string
+          example: "Production Bot"
+        description:
+          type: string
+          example: "API key for production automation"
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [read, write, search, pipeline, admin]
+          example: ["read", "search"]
+        rateLimit:
+          type: integer
+          minimum: 1
+          maximum: 50000
+          default: 1000
+          example: 5000
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Authentication required"
+
+    TableInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "users"
+        schema:
+          type: string
+          example: "public"
+        columns:
+          type: integer
+          example: 15
+        primary_key:
+          type: array
+          items:
+            type: string
+          example: ["id"]
+        sortable:
+          type: array
+          items:
+            type: string
+        filterable:
+          type: array
+          items:
+            type: string
+        searchable:
+          type: array
+          items:
+            type: string
+        clickhouse_search:
+          type: boolean
+
+    SearchResult:
+      type: object
+      properties:
+        results:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: object
+        total_results:
+          type: integer
+        has_more:
+          type: boolean
+        next_cursor:
+          type: string
+        search_time:
+          type: integer
+          description: Search time in milliseconds
+        query:
+          type: string
 
 paths:
-  # ==================== SYSTEM ENDPOINTS ====================
-  
+  # ═══════════════════════════════════════════════════════════
+  # AUTHENTICATION ENDPOINTS
+  # ═══════════════════════════════════════════════════════════
+
+  /api/auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a new user
+      description: Create a new user account with email, username, and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '200':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  accessToken:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid request or password requirements not met
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Email or username already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Login to your account
+      description: Authenticate with email/username and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  accessToken:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/User'
+          headers:
+            Set-Cookie:
+              description: HTTP-only cookies for access_token and refresh_token
+              schema:
+                type: string
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Logout from current session
+      description: Revoke the current session and clear cookies
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /api/auth/me:
+    get:
+      tags: [Authentication]
+      summary: Get current user info
+      description: Returns the authenticated user's profile information
+      responses:
+        '200':
+          description: User information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/api-keys:
+    get:
+      tags: [Authentication]
+      summary: List all API keys
+      description: Get all API keys for the authenticated user
+      responses:
+        '200':
+          description: List of API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/APIKey'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      tags: [Authentication]
+      summary: Create a new API key
+      description: Generate a new API key with specified scopes and rate limit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAPIKeyRequest'
+      responses:
+        '200':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  apiKey:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      key:
+                        type: string
+                        description: The full API key (only shown once!)
+                      keyPrefix:
+                        type: string
+                      name:
+                        type: string
+                      scopes:
+                        type: array
+                        items:
+                          type: string
+                      rateLimit:
+                        type: integer
+                  warning:
+                    type: string
+        '400':
+          description: Invalid scopes or request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/api-keys/{id}:
+    delete:
+      tags: [Authentication]
+      summary: Revoke an API key
+      description: Revoke (delete) an API key by its ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: API key ID
+      responses:
+        '200':
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ═══════════════════════════════════════════════════════════
+  # HEALTH CHECK
+  # ═══════════════════════════════════════════════════════════
+
   /api/health:
     get:
-      tags:
-        - System
-      summary: Health Check
-      description: |
-        Check API health and component availability.
-        
-        Returns status of all system components:
-        - PostgreSQL connection
-        - ClickHouse connection
-        - Redis connection
-        - Table count
-      operationId: healthCheck
+      tags: [System]
+      summary: Health check
+      description: Check if the API is running and healthy
+      security: []
       responses:
         '200':
-          description: System is healthy
+          description: Service is healthy
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HealthStatus'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "UP"
+                  service:
+                    type: string
+                    example: "L.S.D"
+                  tables_count:
+                    type: integer
+                  clickhouse:
+                    type: boolean
+                  redis:
+                    type: boolean
 
-  /api/info:
-    get:
-      tags:
-        - System
-      summary: API Information
-      description: Get API version and available endpoints
-      operationId: getApiInfo
-      responses:
-        '200':
-          description: API information
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiInfo'
+  # ═══════════════════════════════════════════════════════════
+  # TABLES ENDPOINTS
+  # ═══════════════════════════════════════════════════════════
 
-  # ==================== TABLE MANAGEMENT ====================
-  
   /api/tables:
     get:
-      tags:
-        - Tables
-      summary: List All Tables
-      description: |
-        Get all available tables with comprehensive metadata.
-        
-        ## Response Includes
-        - **Schema**: Database schema name
-        - **Columns**: Total column count
-        - **Primary Keys**: Primary key columns
-        - **Sortable**: Columns that support sorting
-        - **Filterable**: Columns for WHERE clauses
-        - **Searchable**: Full-text searchable columns
-        - **ClickHouse Status**: Whether table is indexed in ClickHouse
-      operationId: listTables
+      tags: [Tables]
+      summary: List all available tables
+      description: Get a list of all tables discovered in the database with their metadata
       responses:
         '200':
-          description: List of all tables
+          description: List of tables
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TableList'
+                type: object
+                properties:
+                  tables:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TableInfo'
+                  count:
+                    type: integer
 
   /api/tables/{table}/schema:
     get:
-      tags:
-        - Tables
-      summary: Get Table Schema
-      description: |
-        Get detailed schema information for a specific table.
-        
-        ## Includes
-        - Column names, types, and nullability
-        - Primary key constraints
-        - Indexes for performance optimization
-        - Sortable columns
-        - Filterable columns
-        - Searchable columns
-        - ClickHouse availability
-      operationId: getTableSchema
+      tags: [Tables]
+      summary: Get table schema
+      description: Get detailed schema information for a specific table
       parameters:
-        - $ref: '#/components/parameters/TableName'
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Table name
       responses:
         '200':
           description: Table schema
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TableSchema'
+                type: object
+                properties:
+                  name:
+                    type: string
+                  schema:
+                    type: string
+                  columns:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        dataType:
+                          type: string
+                        nullable:
+                          type: boolean
+                  primary_key:
+                    type: array
+                    items:
+                      type: string
+                  indexes:
+                    type: array
+                    items:
+                      type: object
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: Table not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/tables/{table}/records:
+    get:
+      tags: [Records]
+      summary: Get records from a table
+      description: Retrieve records from a table with pagination, filtering, and sorting
+      parameters:
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Pagination cursor
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+        - name: sort_dir
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+      responses:
+        '200':
+          description: Records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  next_cursor:
+                    type: string
+                  has_more:
+                    type: boolean
+                  count:
+                    type: integer
+                  table:
+                    type: string
+                  cached:
+                    type: boolean
+
+  /api/tables/{table}/records/{pk}:
+    get:
+      tags: [Records]
+      summary: Get a single record by primary key
+      parameters:
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: pk
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Single record
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: Record not found
+
+  /api/tables/{table}/search:
+    get:
+      tags: [Search]
+      summary: Search within a table
+      description: Full-text search within a specific table
+      parameters:
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 100
+          description: Search term
+        - name: columns
+          in: query
+          schema:
+            type: string
+          description: Comma-separated list of columns to search
+        - name: engine
+          in: query
+          schema:
+            type: string
+            enum: [clickhouse, postgresql]
+          description: Force a specific search engine
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  next_cursor:
+                    type: string
+                  has_more:
+                    type: boolean
+                  count:
+                    type: integer
+                  table:
+                    type: string
+                  search_columns:
+                    type: array
+                    items:
+                      type: string
+                  search_engine:
+                    type: string
+                    enum: [clickhouse, postgresql]
 
   /api/tables/{table}/stats:
     get:
-      tags:
-        - Tables
-      summary: Get Table Statistics
-      description: |
-        Get row counts and sync status.
-        
-        Returns:
-        - PostgreSQL row count (exact or estimated)
-        - ClickHouse indexed row count
-        - Last sync timestamp
-      operationId: getTableStats
+      tags: [Tables]
+      summary: Get table statistics
       parameters:
-        - $ref: '#/components/parameters/TableName'
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         '200':
           description: Table statistics
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TableStats'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                type: object
+                properties:
+                  table_name:
+                    type: string
+                  estimated_rows:
+                    type: integer
+                  table_size:
+                    type: string
+                  index_size:
+                    type: string
+                  clickhouse_indexed:
+                    type: integer
+                  clickhouse_last_sync:
+                    type: string
+                    format: date-time
 
-  # ==================== DATA ACCESS ====================
-  
-  /api/tables/{table}/records:
+  # ═══════════════════════════════════════════════════════════
+  # GLOBAL SEARCH
+  # ═══════════════════════════════════════════════════════════
+
+  /api/search/:
     get:
-      tags:
-        - Records
-      summary: Get Records with Pagination
+      tags: [Search]
+      summary: Global search across all tables
       description: |
-        Fetch records with cursor-based pagination, sorting, and filtering.
-        
-        ## Pagination
-        - **Cursor-based**: Efficient for large datasets
-        - **Stateless**: No server-side state required
-        - **Consistent**: Same results across requests
-        
-        ## Sorting
-        - Use `sort_by` and `sort_dir` parameters
-        - Only sortable columns allowed (check schema)
-        - Default: Descending by primary key
-        
-        ## Filtering
-        - Add any filterable column as query parameter
-        - Multiple filters combined with AND logic
-        - Case-sensitive exact match
-        
-        ## Caching
-        - First page cached for 5 minutes
-        - Cache key includes all parameters
-        - Automatic cache invalidation
-        
-        ## Performance Tips
-        - Use indexed columns for sorting
-        - Combine multiple filters
-        - Keep limit ≤ 100 for best performance
-      operationId: getRecords
+        Optimized full-text search across all indexed tables using ClickHouse bitmap indexing.
+        This is the fastest way to search billions of records.
       parameters:
-        - $ref: '#/components/parameters/TableName'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/SortBy'
-        - $ref: '#/components/parameters/SortDir'
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 100
+          description: Search term
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Pagination cursor
       responses:
         '200':
-          description: Records retrieved successfully
+          description: Search results grouped by table
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RecordList'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/tables/{table}/records/{pk}:
-    get:
-      tags:
-        - Records
-      summary: Get Single Record by Primary Key
-      description: |
-        Fetch a specific record by its primary key.
-        
-        Fast single-record lookup using indexed primary key.
-      operationId: getRecordByPK
-      parameters:
-        - $ref: '#/components/parameters/TableName'
-        - $ref: '#/components/parameters/PrimaryKey'
-      responses:
-        '200':
-          description: Record found
+                $ref: '#/components/schemas/SearchResult'
+        '503':
+          description: ClickHouse not available
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Record'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: '#/components/schemas/ErrorResponse'
 
-  # ==================== SEARCH ENDPOINTS ====================
-  
-  /api/tables/{table}/search:
-    get:
-      tags:
-        - Search
-      summary: Search Within Table
-      description: |
-        Full-text search within a single table.
-        
-        ## Search Engines
-        - **ClickHouse** (default): 10-100x faster, recommended
-        - **PostgreSQL**: Fallback when ClickHouse unavailable
-        
-        ## Features
-        - Multi-column search
-        - Case-insensitive by default
-        - Partial word matching
-        - Cursor-based pagination
-        
-        ## Column Selection
-        - Default: All searchable columns
-        - Custom: Specify with `columns` parameter
-        
-        ## Performance
-        - ClickHouse: <100ms for billions of rows
-        - PostgreSQL: Slower but always available
-      operationId: searchTable
-      parameters:
-        - $ref: '#/components/parameters/TableName'
-        - $ref: '#/components/parameters/SearchQuery'
-        - $ref: '#/components/parameters/SearchColumns'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/SearchEngine'
-      responses:
-        '200':
-          description: Search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchResults'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
+  # ═══════════════════════════════════════════════════════════
+  # PIPELINE ENDPOINTS
+  # ═══════════════════════════════════════════════════════════
 
-  /api/search:
-    get:
-      tags:
-        - Search
-      summary: Global Search (All Tables)
-      description: |
-        Search across all tables simultaneously.
-        
-        ## Search Strategy
-        - Queries all tables in parallel
-        - Aggregates results by table
-        - Returns top results from each table
-        
-        ## Features
-        - **Exact Match**: Use `exact=true` for phrase search
-        - **Date Filtering**: Partition pruning with `date_from`
-        - **Pagination**: Cursor-based across all tables
-        
-        ## Performance
-        - ClickHouse parallel: <1 second for 20B+ rows
-        - Results limited per table for speed
-        
-        ## Response Format
-        Results grouped by table with metadata:
-        - Total results across all tables
-        - Tables queried
-        - Tables with results
-        - Search execution time
-      operationId: globalSearch
-      parameters:
-        - $ref: '#/components/parameters/SearchQuery'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/ExactMatch'
-        - $ref: '#/components/parameters/DateFrom'
-      responses:
-        '200':
-          description: Global search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GlobalSearchResults'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-
-  /api/search/parallel:
-    get:
-      tags:
-        - Search
-      summary: Parallel Global Search (Optimized)
-      description: |
-        Optimized version of global search with parallel execution.
-        
-        ## Optimizations
-        - Concurrent table queries
-        - Connection pooling
-        - Result streaming
-        - Early termination when limit reached
-        
-        ## Use Cases
-        - Large datasets (billions of rows)
-        - Time-sensitive queries
-        - High-throughput applications
-        
-        Same parameters and response format as `/api/search`.
-      operationId: parallelGlobalSearch
-      parameters:
-        - $ref: '#/components/parameters/SearchQuery'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/ExactMatch'
-        - $ref: '#/components/parameters/DateFrom'
-      responses:
-        '200':
-          description: Search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GlobalSearchResults'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-
-  /api/search/optimized:
-    get:
-      tags:
-        - Search
-      summary: TF-IDF Optimized Global Search
-      description: |
-        High-performance globally fair search with **Term Frequency-Inverse Document Frequency (TF-IDF)** scoring.
-        
-        ## Algorithm: TF-IDF Ranking
-        
-        This endpoint uses dynamic relevance scoring to ensure records matching **all** search terms 
-        (e.g., "Yashank Sharma") are ranked higher than records matching only **partial** terms (e.g., "Sharma").
-        
-        ### How It Works
-        
-        1. **Tokenization**: Query split into individual terms
-           - Example: `"yashank sharma"` → `['yashank', 'sharma']`
-        
-        2. **Global Statistics**: System analyzes term frequency across entire database
-           - Rare terms (e.g., "yashank"): ~50 matches → High weight (~0.19)
-           - Common terms (e.g., "sharma"): ~500,000 matches → Low weight (~0.00002)
-        
-        3. **Scoring Formula**: 
-           ```
-           Weight(term) = 10 / (Total_Matches + 1)
-           Score(record) = Σ Weight(term) for all matching terms
-           ```
-        
-        4. **Multi-level Sorting**:
-           - **Primary**: Relevance Score (DESC) - Most relevant first
-           - **Secondary**: Updated At (DESC) - Freshest records first
-           - **Tertiary**: Table Name (ASC) - Fair distribution across tables
-        
-        ### Example: "yashank sharma"
-        
-        - **Record A**: "Yashank Sharma" 
-          - Matches: yashank (0.19) + sharma (0.00002)
-          - **Score**: ~0.19 → **Rank #1**
-        
-        - **Record B**: "Rahul Sharma"
-          - Matches: sharma (0.00002)
-          - **Score**: ~0.00002 → **Rank #100**
-        
-        ### Key Features
-        - ✅ **Multi-term prioritization**: Full matches outrank partial matches
-        - ✅ **Rarity boost**: Rare terms contribute more to score
-        - ✅ **Table fairness**: Results distributed evenly across tables
-        - ✅ **Freshness factor**: Recent updates prioritized
-        - ✅ **Stable pagination**: Cursor-based for consistent results
-        
-        ### Aggregations
-        
-        - **Page Aggregations** (`aggregations`): Counts on current page
-        - **Global Aggregations** (`global_aggregations`): Total matches in database
-        
-        ### Use Cases
-        - Search-as-you-type with intelligent ranking
-        - Multi-word name searches (first + last name)
-        - Finding rare entities among common terms
-        - Fair cross-table result distribution
-      operationId: optimizedSearch
-      parameters:
-        - $ref: '#/components/parameters/SearchQuery'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Cursor'
-      responses:
-        '200':
-          description: TF-IDF scored search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OptimizedSearchResults'
-              examples:
-                multi_word_search:
-                  summary: Multi-word search with TF-IDF scoring
-                  value:
-                    results:
-                      angel:
-                        - name: "Yashank Sharma"
-                          s_indx: 12345
-                          updated_at: "2026-01-30T11:14:35Z"
-                          _score: 19.001
-                        - name: "Rahul Sharma"
-                          s_indx: 67890
-                          updated_at: "2026-01-29T10:20:15Z"
-                          _score: 1.0
-                      b2b:
-                        - first_name: "Yash"
-                          last_name: "Sharma"
-                          s_indx: 98765
-                          updated_at: "2026-01-31T15:30:00Z"
-                          _score: 19.001
-                    total_results: 25
-                    aggregations:
-                      angel: 15
-                      b2b: 10
-                    global_aggregations:
-                      angel: 156156
-                      b2b: 53819
-                    total_tables_matched: 2
-                    has_more: true
-                    next_cursor: "eyJsYXN0X2lkIjoiOTg3NjUiLCJsYXN0X3VwZGF0ZWRfYXQiOiIyMDI2LTAxLTMxVDE1OjMwOjAwWiJ9"
-                    scoring_strategy: "Term Frequency (TF-IDF)"
-                    scoring_details:
-                      logic: "Records scored by number of matching tokens. Rare terms (yashank) get ~19 points, common terms (sharma) get ~1 point."
-                      dynamic_weights: "Weight per token: 10 / (Total Matches + 1) to prioritize rarity. Boost applied to known tables."
-                      sorting: "1. Score DESC, 2. Updated_at DESC, 3. Table_name ASC"
-                    search_time: 245
-        '400':
-          $ref: '#/components/responses/BadRequest'
-
-  # ==================== PIPELINE ENDPOINTS ====================
-  
   /api/pipeline/start:
     post:
-      tags:
-        - Pipeline
-      summary: Start Pipeline Job
-      description: |
-        Process files from a folder and load into database.
-        
-        ## Supported Formats
-        - **CSV** (.csv)
-        - **Excel** (.xlsx, .xls) - All sheets processed
-        - **JSON** (.json)
-        - **JSON Lines** (.jsonl)
-        
-        ## Processing Steps
-        1. File discovery (recursive if enabled)
-        2. Encoding detection
-        3. Type inference
-        4. Data cleaning
-        5. Table creation
-        6. Batch insertion
-        7. Error handling
-        
-        ## Features
-        - Automatic table naming
-        - Type inference
-        - Duplicate detection
-        - Error recovery (failed files moved to ErrorFiles/)
-      operationId: startPipelineJob
+      tags: [Pipeline]
+      summary: Start a pipeline job
+      description: Start a new data pipeline job to process CSV files
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PipelineJobRequest'
+              type: object
+              required:
+                - file_path
+                - table_name
+              properties:
+                file_path:
+                  type: string
+                  description: Path to the CSV file
+                table_name:
+                  type: string
+                  description: Target table name
+                options:
+                  type: object
+                  properties:
+                    delimiter:
+                      type: string
+                      default: ","
+                    has_header:
+                      type: boolean
+                      default: true
+                    batch_size:
+                      type: integer
+                      default: 10000
       responses:
-        '202':
-          description: Job started successfully
+        '200':
+          description: Job started
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PipelineJobStartResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+                  message:
+                    type: string
 
   /api/pipeline/jobs:
     get:
-      tags:
-        - Pipeline
-      summary: List All Pipeline Jobs
-      description: Get all jobs (active and completed)
-      operationId: listPipelineJobs
+      tags: [Pipeline]
+      summary: List all pipeline jobs
       responses:
         '200':
           description: List of jobs
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PipelineJobList'
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      type: object
 
   /api/pipeline/jobs/{job_id}:
     get:
-      tags:
-        - Pipeline
-      summary: Get Pipeline Job Status
-      description: |
-        Check job progress with detailed metrics.
-        
-        Includes:
-        - File processing progress
-        - Record counts
-        - Error details
-        - Execution time
-      operationId: getPipelineJobStatus
+      tags: [Pipeline]
+      summary: Get job status
       parameters:
-        - $ref: '#/components/parameters/JobId'
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         '200':
           description: Job status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PipelineJobStatus'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/pipeline/jobs/{job_id}/stream:
-    get:
-      tags:
-        - Pipeline
-      summary: Stream Job Progress (SSE)
-      description: |
-        Real-time progress updates via Server-Sent Events.
-        
-        ## Stream Format
-        - Content-Type: `text/event-stream`
-        - Updates every 500ms
-        - Auto-closes when job completes
-        
-        ## Client Examples
-        
-        **JavaScript**:
-        ```javascript
-        const eventSource = new EventSource('/api/pipeline/jobs/{id}/stream');
-        eventSource.onmessage = (e) => {
-          const data = JSON.parse(e.data);
-          console.log(data.processed_records);
-        };
-        ```
-        
-        **cURL**:
-        ```bash
-        curl -N http://localhost:5000/api/pipeline/jobs/{id}/stream
-        ```
-      operationId: streamPipelineJob
-      parameters:
-        - $ref: '#/components/parameters/JobId'
-      responses:
-        '200':
-          description: SSE stream started
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                description: Server-Sent Events stream
-        '404':
-          $ref: '#/components/responses/NotFound'
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [pending, running, completed, failed]
+                  progress:
+                    type: integer
+                  total:
+                    type: integer
+                  error:
+                    type: string
 
   /api/pipeline/jobs/{job_id}/logs:
     get:
-      tags:
-        - Pipeline
-      summary: View Job Logs
-      description: Get detailed job execution logs
-      operationId: viewPipelineJobLogs
+      tags: [Pipeline]
+      summary: Get job logs
       parameters:
-        - $ref: '#/components/parameters/JobId'
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         '200':
           description: Job logs
           content:
-            text/plain:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        time:
+                          type: string
+                        level:
+                          type: string
+                        message:
+                          type: string
+
+  /api/pipeline/jobs/{job_id}/stream:
+    get:
+      tags: [Pipeline]
+      summary: Stream job progress
+      description: Server-sent events stream for real-time job progress
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
               schema:
                 type: string
-                description: Plain text log file
-        '404':
-          $ref: '#/components/responses/NotFound'
 
-  # ==================== CDC ENDPOINTS ====================
-  
+  # ═══════════════════════════════════════════════════════════
+  # CDC ENDPOINTS
+  # ═══════════════════════════════════════════════════════════
+
   /api/cdc/status:
     get:
-      tags:
-        - CDC
-      summary: Get CDC Status
-      description: |
-        Check Change Data Capture sync status.
-        
-        ## Provides
-        - Overall CDC system status
-        - Per-table sync status
-        - Last synced record ID
-        - Sync lag in seconds
-        - Records synced count
-      operationId: getCDCStatus
+      tags: [CDC]
+      summary: Get CDC status
+      description: Get the current status of Change Data Capture synchronization
       responses:
         '200':
           description: CDC status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CDCStatus'
-
-# ==================== COMPONENTS ====================
-
-components:
-  parameters:
-    TableName:
-      name: table
-      in: path
-      required: true
-      description: Table name
-      schema:
-        type: string
-      example: b2b
-    
-    PrimaryKey:
-      name: pk
-      in: path
-      required: true
-      description: Primary key value
-      schema:
-        oneOf:
-          - type: string
-          - type: integer
-      example: 19244201
-    
-    JobId:
-      name: job_id
-      in: path
-      required: true
-      description: Pipeline job UUID
-      schema:
-        type: string
-        format: uuid
-      example: 550e8400-e29b-41d4-a716-446655440000
-    
-    Limit:
-      name: limit
-      in: query
-      description: Number of records per page (max 100)
-      schema:
-        type: integer
-        default: 20
-        minimum: 1
-        maximum: 100
-      example: 50
-    
-    Cursor:
-      name: cursor
-      in: query
-      description: Base64 encoded pagination cursor from previous response
-      schema:
-        type: string
-      example: eyJsYXN0X2lkIjoiMTkyNDQyMDEifQ==
-    
-    SortBy:
-      name: sort_by
-      in: query
-      description: Column to sort by (must be in sortable list)
-      schema:
-        type: string
-      example: updated_at
-    
-    SortDir:
-      name: sort_dir
-      in: query
-      description: Sort direction
-      schema:
-        type: string
-        enum: [asc, desc]
-        default: desc
-      example: desc
-    
-    SearchQuery:
-      name: q
-      in: query
-      required: true
-      description: Search term (2-100 characters). Supports multi-word queries.
-      schema:
-        type: string
-        minLength: 2
-        maxLength: 100
-      example: yashank sharma
-    
-    SearchColumns:
-      name: columns
-      in: query
-      description: Comma-separated columns to search (default all searchable)
-      schema:
-        type: string
-      example: first_name,last_name,company_name
-    
-    SearchEngine:
-      name: engine
-      in: query
-      description: Force specific search engine
-      schema:
-        type: string
-        enum: [clickhouse, postgresql]
-      example: clickhouse
-    
-    ExactMatch:
-      name: exact
-      in: query
-      description: Exact phrase match
-      schema:
-        type: boolean
-        default: false
-      example: false
-    
-    DateFrom:
-      name: date_from
-      in: query
-      description: Filter by date (YYYY-MM-DD) for partition pruning
-      schema:
-        type: string
-        format: date
-      example: "2026-01-01"
-
-  schemas:
-    HealthStatus:
-      type: object
-      properties:
-        status:
-          type: string
-          enum: [healthy, unhealthy]
-          example: healthy
-        service:
-          type: string
-          example: dynamic-api
-        tables_count:
-          type: integer
-          description: Number of tables discovered
-          example: 4
-        clickhouse:
-          type: boolean
-          description: ClickHouse connection status
-          example: true
-        redis:
-          type: boolean
-          description: Redis connection status
-          example: true
-        optimized:
-          type: boolean
-          description: Whether optimizations are enabled
-          example: true
-
-    ApiInfo:
-      type: object
-      properties:
-        name:
-          type: string
-          example: L.S.D - Large Search of Data
-        version:
-          type: string
-          example: "2.0"
-        endpoints:
-          type: array
-          items:
-            type: string
-          example:
-            - GET /api/health
-            - GET /api/info
-            - GET /api/tables
-            - GET /api/search
-            - GET /api/search/optimized
-
-    TableList:
-      type: object
-      properties:
-        tables:
-          type: array
-          items:
-            $ref: '#/components/schemas/TableMetadata'
-        count:
-          type: integer
-          description: Total number of tables
-          example: 4
-
-    TableMetadata:
-      type: object
-      properties:
-        name:
-          type: string
-          example: b2b
-        schema:
-          type: string
-          example: public
-        columns:
-          type: integer
-          description: Total column count
-          example: 25
-        primary_key:
-          type: array
-          items:
-            type: string
-          example: [id]
-        sortable:
-          type: array
-          items:
-            type: string
-          description: Columns that support sorting
-          example: [id, updated_at, created_at]
-        filterable:
-          type: array
-          items:
-            type: string
-          description: Columns for WHERE clauses
-          example: [city, state, country]
-        searchable:
-          type: array
-          items:
-            type: string
-          description: Full-text searchable columns
-          example: [first_name, last_name, company_name, email1]
-        clickhouse_search:
-          type: boolean
-          description: Whether table is indexed in ClickHouse
-          example: true
-
-    TableSchema:
-      type: object
-      properties:
-        name:
-          type: string
-          example: b2b
-        schema:
-          type: string
-          example: public
-        columns:
-          type: array
-          items:
-            $ref: '#/components/schemas/ColumnDefinition'
-        primary_key:
-          type: array
-          items:
-            type: string
-          example: [id]
-        indexes:
-          type: array
-          items:
-            type: string
-          description: Database indexes for performance
-          example: [idx_b2b_updated_at, idx_b2b_city]
-        sortable:
-          type: array
-          items:
-            type: string
-          example: [id, updated_at, created_at]
-        filterable:
-          type: array
-          items:
-            type: string
-          example: [city, state, country]
-        searchable:
-          type: array
-          items:
-            type: string
-          example: [first_name, last_name, company_name, email1]
-        clickhouse_search:
-          type: boolean
-          example: true
-
-    ColumnDefinition:
-      type: object
-      properties:
-        name:
-          type: string
-          example: first_name
-        data_type:
-          type: string
-          example: character varying
-        nullable:
-          type: boolean
-          example: true
-
-    TableStats:
-      type: object
-      properties:
-        table_name:
-          type: string
-          example: b2b
-        row_count:
-          type: integer
-          description: PostgreSQL row count
-          example: 3250000
-        estimated:
-          type: boolean
-          description: Whether row count is estimated
-          example: true
-        clickhouse_indexed:
-          type: integer
-          description: Rows indexed in ClickHouse
-          example: 3250000
-        clickhouse_last_sync:
-          type: string
-          format: date-time
-          description: Last sync timestamp
-          example: "2026-01-30T16:53:02Z"
-
-    RecordList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/Record'
-          description: Array of records
-        next_cursor:
-          type: string
-          nullable: true
-          description: Opaque cursor for next page (null if no more pages)
-          example: eyJsYXN0X2lkIjoiMTkyNDQyMDEifQ==
-        has_more:
-          type: boolean
-          description: Whether more records are available
-          example: true
-        count:
-          type: integer
-          description: Number of records in current response
-          example: 50
-        table:
-          type: string
-          description: Table name
-          example: b2b
-        cached:
-          type: boolean
-          description: Whether response was served from cache
-          example: false
-
-    Record:
-      type: object
-      description: Single record object with dynamic columns
-      additionalProperties: true
-      example:
-        id: 19244201
-        first_name: Rahul
-        last_name: Jain
-        company_name: Milan Textiles
-        email1: rahuldjain27@gmail.com
-        mobile1: -9986667030
-        city: Bengaluru
-        state: Karnataka
-        country: India
-        updated_at: "2026-01-30T11:14:35Z"
-
-    SearchResults:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/Record'
-        next_cursor:
-          type: string
-          nullable: true
-          example: eyJsYXN0X2lkIjoiMTkyNDQyMDEifQ==
-        has_more:
-          type: boolean
-          example: true
-        count:
-          type: integer
-          example: 20
-        table:
-          type: string
-          example: b2b
-        search_columns:
-          type: array
-          items:
-            type: string
-          description: Columns that were searched
-          example: [first_name, last_name, company_name]
-        search_engine:
-          type: string
-          enum: [clickhouse, postgresql]
-          description: Engine used for search
-          example: clickhouse
-
-    GlobalSearchResults:
-      type: object
-      properties:
-        results:
-          type: object
-          description: Results grouped by table
-          additionalProperties:
-            type: array
-            items:
-              $ref: '#/components/schemas/Record'
-          example:
-            b2b:
-              - id: 19244201
-                first_name: Rahul
-                _source_table: b2b
-                _updated_at: "2026-01-30T11:14:35Z"
-            angel:
-              - id: 7900445
-                name: Rahul Kumar
-                _source_table: angel
-        total_results:
-          type: integer
-          description: Total results across all tables
-          example: 20
-        has_more:
-          type: boolean
-          description: Whether more results exist
-          example: true
-        next_cursor:
-          type: string
-          nullable: true
-          description: Cursor for next page
-          example: eyJsYXN0X2lkIjoiMTkyNDQ3NTQifQ==
-        tables_queried:
-          type: integer
-          description: Number of tables searched
-          example: 4
-        tables_in_results:
-          type: integer
-          description: Number of tables with results
-          example: 2
-        search_time:
-          type: integer
-          description: Query execution time in milliseconds
-          example: 836
-        query:
-          type: string
-          description: Search query used
-          example: rahul
-        limit:
-          type: integer
-          example: 20
-        cursor:
-          type: string
-          example: ""
-        exact_match:
-          type: boolean
-          example: false
-        date_from:
-          type: string
-          format: date
-          nullable: true
-          example: null
-        search_engine:
-          type: string
-          enum: [clickhouse_parallel, postgresql]
-          example: clickhouse_parallel
-        clickhouse_available:
-          type: boolean
-          example: true
-
-    OptimizedSearchResults:
-      type: object
-      properties:
-        results:
-          type: object
-          description: Results grouped by table, sorted by TF-IDF score
-          additionalProperties:
-            type: array
-            items:
-              allOf:
-                - $ref: '#/components/schemas/Record'
-                - type: object
-                  properties:
-                    _score:
-                      type: number
-                      format: float
-                      description: TF-IDF relevance score for this record
-                      example: 19.001
-        total_results:
-          type: integer
-          description: Total number of results on current page
-          example: 25
-        aggregations:
-          type: object
-          description: Count of results on current page per table
-          additionalProperties:
-            type: integer
-          example:
-            angel: 15
-            b2b: 10
-        global_aggregations:
-          type: object
-          description: Total count of matching records in entire database per table
-          additionalProperties:
-            type: integer
-          example:
-            angel: 156156
-            b2b: 53819
-        total_tables_matched:
-          type: integer
-          description: Number of tables with at least one match
-          example: 2
-        has_more:
-          type: boolean
-          description: Whether more results are available on next page
-          example: true
-        next_cursor:
-          type: string
-          nullable: true
-          description: Base64 encoded cursor for next page
-          example: eyJsYXN0X2lkIjoiOTg3NjUiLCJsYXN0X3VwZGF0ZWRfYXQiOiIyMDI2LTAxLTMxVDE1OjMwOjAwWiJ9
-        scoring_strategy:
-          type: string
-          description: Algorithm used for relevance scoring
-          example: Term Frequency (TF-IDF)
-        scoring_details:
-          type: object
-          description: Detailed breakdown of scoring algorithm
-          properties:
-            logic:
-              type: string
-              description: High-level explanation of scoring logic
-              example: Records scored by number of matching tokens. Rare terms (yashank) get ~19 points, common terms (sharma) get ~1 point.
-            dynamic_weights:
-              type: string
-              description: Mathematical formula for weight calculation
-              example: Weight per token = 10 / (Total Matches + 1) to prioritize rarity. Boost applied to known tables.
-            sorting:
-              type: string
-              description: Multi-level sorting strategy
-              example: "1. Score DESC, 2. Updated_at DESC, 3. Table_name ASC"
-        search_time:
-          type: integer
-          description: Query execution time in milliseconds
-          example: 245
-
-    PipelineJobRequest:
-      type: object
-      required:
-        - folder_path
-      properties:
-        folder_path:
-          type: string
-          description: Path to folder containing data files
-          example: /data/imports
-        recursive:
-          type: boolean
-          description: Process subdirectories
-          default: false
-          example: true
-
-    PipelineJobStartResponse:
-      type: object
-      properties:
-        job_id:
-          type: string
-          format: uuid
-          description: Unique job identifier
-          example: 550e8400-e29b-41d4-a716-446655440000
-        message:
-          type: string
-          example: Job started successfully
-
-    PipelineJobList:
-      type: object
-      properties:
-        jobs:
-          type: array
-          items:
-            $ref: '#/components/schemas/PipelineJobSummary'
-        count:
-          type: integer
-          example: 1
-
-    PipelineJobSummary:
-      type: object
-      properties:
-        job_id:
-          type: string
-          format: uuid
-          example: 550e8400-e29b-41d4-a716-446655440000
-        status:
-          type: string
-          enum: [pending, running, completed, failed]
-          example: completed
-        total_records:
-          type: integer
-          example: 50000
-        start_time:
-          type: string
-          format: date-time
-          example: "2026-01-30T16:00:00Z"
-
-    PipelineJobStatus:
-      type: object
-      properties:
-        job_id:
-          type: string
-          format: uuid
-          example: 550e8400-e29b-41d4-a716-446655440000
-        status:
-          type: string
-          enum: [pending, running, completed, failed]
-          example: running
-        total_files:
-          type: integer
-          example: 10
-        processed_files:
-          type: integer
-          example: 7
-        total_records:
-          type: integer
-          example: 50000
-        processed_records:
-          type: integer
-          example: 35000
-        failed_records:
-          type: integer
-          example: 12
-        start_time:
-          type: string
-          format: date-time
-          example: "2026-01-30T16:00:00Z"
-        elapsed_time:
-          type: string
-          description: Human-readable elapsed time
-          example: 2m30s
-        current_file:
-          type: string
-          nullable: true
-          example: customers_2024.xlsx
-        log_path:
-          type: string
-          example: /var/log/pipeline/job_550e8400.log
-
-    CDCStatus:
-      type: object
-      properties:
-        is_running:
-          type: boolean
-          description: Whether CDC is currently running
-          example: true
-        available:
-          type: boolean
-          description: Whether CDC is available
-          example: true
-        total_tables:
-          type: integer
-          description: Number of tables being synced
-          example: 4
-        table_statuses:
-          type: object
-          description: Per-table sync status
-          additionalProperties:
-            $ref: '#/components/schemas/TableCDCStatus'
-          example:
-            b2b:
-              table_name: b2b
-              is_syncing: true
-              last_synced_id: "3250000"
-              last_sync_time: "2026-01-30T16:53:01Z"
-              records_synced: 3250000
-              sync_lag_seconds: 2
-
-    TableCDCStatus:
-      type: object
-      properties:
-        table_name:
-          type: string
-          example: b2b
-        is_syncing:
-          type: boolean
-          example: true
-        last_synced_id:
-          type: string
-          description: Last synced record ID
-          example: "3250000"
-        last_sync_time:
-          type: string
-          format: date-time
-          example: "2026-01-30T16:53:01Z"
-        records_synced:
-          type: integer
-          description: Total records synced
-          example: 3250000
-        sync_lag_seconds:
-          type: integer
-          description: Sync lag in seconds
-          example: 2
-
-    Error:
-      type: object
-      properties:
-        error:
-          type: string
-          description: Error message
-          example: Table not found
-
-  responses:
-    BadRequest:
-      description: Invalid request parameters
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-          example:
-            error: Invalid search query - must be 2-100 characters
-    
-    NotFound:
-      description: Resource not found
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-          example:
-            error: Table not found
-
-  securitySchemes:
-    ApiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-API-Key
-      description: API key for authentication (not yet implemented)
-    
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: JWT bearer token (not yet implemented)
+                type: object
+                properties:
+                  is_running:
+                    type: boolean
+                  available:
+                    type: boolean
+                  total_tables:
+                    type: integer
+                  table_statuses:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        last_sync:
+                          type: string
+                          format: date-time
+                        records_synced:
+                          type: integer
+                        status:
+                          type: string

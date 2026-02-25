@@ -20,8 +20,9 @@ type Config struct {
 	ClickHouseDB       string
 	ClickHouseUser     string
 	ClickHousePassword string
-	ClickHouseDSN      string // <--- ADD THIS: For Async Inserts Optimization
+	ClickHouseDSN      string
 	EnableCDC          bool
+	JWTSecret          string
 }
 
 func LoadConfig() *Config {
@@ -43,6 +44,7 @@ func LoadConfig() *Config {
 		ClickHouseUser:     getEnv("CLICKHOUSE_USER", "default"),
 		ClickHousePassword: getEnv("CLICKHOUSE_PASSWORD", ""),
 		EnableCDC:          getEnv("ENABLE_CDC", "true") == "true",
+		JWTSecret:          getEnv("JWT_SECRET", "lsd-jwt-secret-key-2026-change-in-production"),
 	}
 
 	// ═══════════════════════════════════════════════════════════

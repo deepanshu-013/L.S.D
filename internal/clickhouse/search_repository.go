@@ -5,10 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"highperf-api/internal/schema"
@@ -29,14 +33,30 @@ type SearchRepository struct {
 	conn       ClickHouseConnection
 	registry   *schema.SchemaRegistry
 	entityRepo *EntityRepository
+	mu         sync.RWMutex
+
+	retryCount       uint64
+	deadLetterCount  uint64
+	collisionCount   uint64
+	indexLagGauge    uint64
+	tableIDValidated bool
 }
 
 func NewSearchRepository(conn ClickHouseConnection, registry *schema.SchemaRegistry) *SearchRepository {
-	return &SearchRepository{
+	r := &SearchRepository{
 		conn:       conn,
 		registry:   registry,
 		entityRepo: NewEntityRepository(conn),
 	}
+
+	if err := r.validateTableIDs(); err != nil {
+		log.Printf("⚠️ Table ID validation: %v", err)
+		atomic.AddUint64(&r.collisionCount, 1)
+	} else {
+		r.tableIDValidated = true
+	}
+
+	return r
 }
 
 type SearchResult struct {
@@ -45,7 +65,7 @@ type SearchResult struct {
 	HasMore       bool                     `json:"has_more"`
 	Count         int                      `json:"count"`
 	SearchColumns []string                 `json:"search_columns,omitempty"`
-	TablesQueried int                      `json:"tables_queried,omitempty"`
+	Aggregations  map[string]int           `json:"aggregations"`
 }
 
 type SearchParams struct {
@@ -66,76 +86,99 @@ type SyncStats struct {
 }
 
 type SearchCursor struct {
-	LastID        string    `json:"last_id"`
-	LastUpdatedAt time.Time `json:"last_updated_at"`
+	LastGlobalID string `json:"last_global_id"`
+}
+
+func marshalCursor(c SearchCursor) (string, error) {
+	cursorJSON, err := json.Marshal(c)
+	if err == nil {
+		return base64.URLEncoding.EncodeToString(cursorJSON), nil
+	}
+	return "", err
+}
+
+func unmarshalCursor(cursorStr string) (*SearchCursor, error) {
+	if cursorStr == "" {
+		return &SearchCursor{LastGlobalID: ""}, nil
+	}
+	decoded, err := base64.URLEncoding.DecodeString(cursorStr)
+	if err != nil {
+		return &SearchCursor{LastGlobalID: ""}, nil
+	}
+	var c SearchCursor
+	if err := json.Unmarshal(decoded, &c); err != nil {
+		return &SearchCursor{LastGlobalID: ""}, nil
+	}
+	return &c, nil
+}
+
+func uint64SliceToStrings(ids []uint64) []string {
+	strs := make([]string, len(ids))
+	for i, id := range ids {
+		strs[i] = fmt.Sprintf("%d", id)
+	}
+	return strs
+}
+
+func (r *SearchRepository) getGlobalStatsFromHashes(hashes []uint64) map[string]uint64 {
+	if len(hashes) == 0 {
+		return make(map[string]uint64)
+	}
+
+	hashList := make([]string, len(hashes))
+	for i, h := range hashes {
+		hashList[i] = fmt.Sprintf("%d", h)
+	}
+
+	query := fmt.Sprintf(`
+        SELECT table_name, sum(count) as count
+        FROM search_token_stats
+        WHERE token_hash IN (%s)
+        GROUP BY table_name
+    `, strings.Join(hashList, ","))
+
+	rows, err := r.conn.Query(context.Background(), query)
+	if err != nil {
+		return make(map[string]uint64)
+	}
+	defer rows.Close()
+
+	stats := make(map[string]uint64)
+	for rows.Next() {
+		var t string
+		var count uint64
+		if rows.Scan(&t, &count) == nil {
+			stats[t] = count
+		}
+	}
+	return stats
 }
 
 func (r *SearchRepository) IsAvailable() bool {
 	return r.conn != nil && r.conn.IsAvailable()
 }
 
+var validTableRegex = func() *regexp.Regexp {
+	return regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+}()
+
+func validateTableName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty table name")
+	}
+	if !validTableRegex.MatchString(name) {
+		return fmt.Errorf("invalid table name: %s", name)
+	}
+	return nil
+}
+
+// ⭐ UPDATED: Removed s_indx
 func (r *SearchRepository) EnsureSearchIndex(ctx context.Context, tableName string) error {
 	if !r.IsAvailable() {
 		return fmt.Errorf("clickhouse not available")
 	}
 
-	table := r.registry.GetTable(tableName)
-	if table == nil {
-		return fmt.Errorf("table not found: %s", tableName)
-	}
-
-	var textColumns []string
-	for _, col := range table.Columns {
-		if col.DataType == "character varying" || col.DataType == "text" {
-			textColumns = append(textColumns, strings.ToLower(col.Name))
-		}
-	}
-
-	var columnDefs string
-	if len(textColumns) > 0 {
-		for _, colName := range textColumns {
-			columnDefs += fmt.Sprintf(",\n\t\t\t%s String DEFAULT ''", colName)
-		}
-	}
-
-	indexTableName := fmt.Sprintf("search_%s", tableName)
-
-	createTableSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			id String,
-			table_name String DEFAULT '%s',
-			search_text String,
-			original_data String CODEC(ZSTD(3))%s,
-			is_deleted UInt8 DEFAULT 0,
-			synced_at DateTime DEFAULT now(),
-			updated_at DateTime DEFAULT now(),
-			
-			INDEX idx_search_bloom search_text TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 4,
-			INDEX idx_id_minmax id TYPE minmax GRANULARITY 4,
-			INDEX idx_date_minmax updated_at TYPE minmax GRANULARITY 1
-		) ENGINE = MergeTree()
-		PARTITION BY toYYYYMM(updated_at)
-		ORDER BY (is_deleted, updated_at, id)
-		SETTINGS
-			index_granularity = 8192,
-			index_granularity_bytes = 10485760,
-			compress_marks = 1,
-			compress_primary_key = 1
-	`, indexTableName, tableName, columnDefs)
-
-	return r.conn.Exec(ctx, createTableSQL)
-}
-
-func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, records []map[string]interface{}) error {
-	if !r.IsAvailable() {
-		return nil
-	}
-
-	if len(records) == 0 {
-		return nil
-	}
-
-	if err := r.EnsureSearchIndex(ctx, tableName); err != nil {
+	if err := validateTableName(tableName); err != nil {
 		return err
 	}
 
@@ -144,35 +187,166 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 		return fmt.Errorf("table not found: %s", tableName)
 	}
 
-	pkColumn := "id"
-	if len(table.PrimaryKey) > 0 {
-		pkColumn = table.PrimaryKey[0]
+	indexTableName := fmt.Sprintf("search_%s", tableName)
+
+	createTableSQL := fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        global_id UInt64 CODEC(ZSTD(3)),
+        original_data String CODEC(ZSTD(3)),
+        is_deleted UInt8 DEFAULT 0,
+        synced_at DateTime CODEC(DoubleDelta, ZSTD(3)),
+        updated_at DateTime CODEC(DoubleDelta, ZSTD(3))
+    ) ENGINE = ReplacingMergeTree(updated_at)
+    PARTITION BY toYYYYMM(updated_at)
+    ORDER BY (global_id)
+    SETTINGS index_granularity = 16384
+`, indexTableName)
+
+	return r.conn.Exec(ctx, createTableSQL)
+}
+
+// ⭐ Smart Tokenizer
+func (r *SearchRepository) extractSearchableTokens(record map[string]interface{}, table *schema.TableInfo, pkCol string) []string {
+	var tokens []string
+
+	// Columns to strictly ignore (system/junk)
+	// We ignore UUIDs by type later, but names help for timestamp columns
+	ignoredCols := map[string]bool{
+		"created_at": true,
+		"updated_at": true,
+		"deleted_at": true,
 	}
 
-	var searchableColumns []string
 	for _, col := range table.Columns {
-		if col.DataType == "character varying" || col.DataType == "text" {
-			searchableColumns = append(searchableColumns, strings.ToLower(col.Name))
+		// 1. Skip System Columns
+		if ignoredCols[col.Name] {
+			continue
 		}
+
+		// 2. Skip Primary Key (Junk token for search)
+		if col.Name == pkCol {
+			continue
+		}
+
+		val, ok := record[col.Name]
+		if !ok || val == nil {
+			continue
+		}
+
+		// 3. Process by Data Type
+		switch strings.ToLower(col.DataType) {
+		case "text", "character varying", "varchar", "char":
+			// Index Text
+			if str, ok := val.(string); ok {
+				tokens = append(tokens, strings.Fields(strings.ToLower(str))...)
+			}
+
+		case "integer", "bigint", "smallint", "int", "int2", "int4", "int8":
+			// Index Integers (Statuses, FKs)
+			tokens = append(tokens, fmt.Sprintf("%d", val))
+
+		case "numeric", "decimal", "double precision", "real", "float":
+			// Index Floats (2 decimal precision)
+			if f, ok := val.(float64); ok {
+				tokens = append(tokens, fmt.Sprintf("%.2f", f))
+			} else if f, ok := val.(float32); ok {
+				tokens = append(tokens, fmt.Sprintf("%.2f", f))
+			}
+
+		case "date", "timestamp", "timestamptz":
+			// Index Dates (Searchable strings)
+			if t, ok := val.(time.Time); ok {
+				tokens = append(tokens, t.Format("2006"), t.Format("2006-01"), t.Format("2006-01-02"))
+			}
+
+		case "boolean":
+			if b, ok := val.(bool); ok {
+				tokens = append(tokens, strconv.FormatBool(b))
+			}
+		}
+	}
+	return tokens
+}
+
+func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, records []map[string]interface{}) error {
+	if !r.IsAvailable() || len(records) == 0 {
+		return nil
+	}
+
+	if err := validateTableName(tableName); err != nil {
+		return fmt.Errorf("invalid table name: %w", err)
+	}
+
+	if err := r.EnsureSearchIndex(ctx, tableName); err != nil {
+		return fmt.Errorf("failed to ensure search index: %w", err)
+	}
+
+	table := r.registry.GetTable(tableName)
+	if table == nil {
+		return fmt.Errorf("table not found: %s", tableName)
+	}
+
+	pkCol := "id"
+	if len(table.PrimaryKey) > 0 {
+		pkCol = table.PrimaryKey[0]
 	}
 
 	indexTableName := fmt.Sprintf("search_%s", tableName)
-	insertColumns := "id, table_name, search_text, original_data, is_deleted, updated_at"
-	for _, col := range searchableColumns {
-		insertColumns += ", " + col
-	}
+	startTime := time.Now()
 
+	// 1. Main Data Batch (No s_indx)
 	batch, err := r.conn.PrepareBatch(ctx, fmt.Sprintf(`
-		INSERT INTO %s (%s)
-	`, indexTableName, insertColumns))
+        INSERT INTO %s (global_id, original_data, is_deleted, synced_at, updated_at)
+    `, indexTableName))
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
+	defer func() { _ = batch.Abort() }()
 
-	startTime := time.Now()
+	// 2. Token Stream Batch
+	tokenBatch, err := r.conn.PrepareBatch(ctx, `
+        INSERT INTO search_token_entity (token_hash, token, global_id, table_name, updated_at)
+    `)
+	if err != nil {
+		return fmt.Errorf("failed to prepare token batch: %w", err)
+	}
+	defer func() { _ = tokenBatch.Abort() }()
+
+	// 3. Stats Batch
+	statsBatch, err := r.conn.PrepareBatch(ctx, `
+        INSERT INTO search_token_stats (token_hash, token, table_name, count, updated_at)
+    `)
+	if err != nil {
+		return fmt.Errorf("failed to prepare stats batch: %w", err)
+	}
+	defer func() { _ = statsBatch.Abort() }()
+
+	tableID := r.getTableIDDeterministic(tableName)
+	now := time.Now()
 
 	for _, record := range records {
-		pkValue := fmt.Sprintf("%v", record[pkColumn])
+		pkValueRaw, ok := record[pkCol]
+		if !ok {
+			continue
+		}
+
+		pkVal := getUint64FromInterface(pkValueRaw)
+		if pkVal == 0 {
+			continue
+		}
+
+		global_id := generateCompactGlobalID(tableID, pkVal)
+
+		// ⭐ Use Smart Tokenizer
+		tokens := r.extractSearchableTokens(record, table, pkCol)
+
+		var updatedAt time.Time
+		if val, ok := record["updated_at"].(time.Time); ok {
+			updatedAt = val
+		}
+		if updatedAt.IsZero() {
+			updatedAt = now
+		}
 
 		isDeleted := uint8(0)
 		if val, ok := record["is_deleted"]; ok {
@@ -181,59 +355,334 @@ func (r *SearchRepository) BulkIndex(ctx context.Context, tableName string, reco
 			}
 		}
 
-		searchText := r.extractSearchableText(record, table)
 		originalData, _ := json.Marshal(record)
 
-		var updatedAt time.Time
-		if val, ok := record["updated_at"]; ok {
-			if t, ok := val.(time.Time); ok {
-				updatedAt = t
+		// Append Main (No s_indx)
+		if err := batch.Append(global_id, string(originalData), isDeleted, now, updatedAt); err != nil {
+			return fmt.Errorf("failed to append main batch: %w", err)
+		}
+
+		// Process Tokens
+		seenTokens := make(map[uint64]bool)
+
+		for _, token := range tokens {
+			if len(token) < 2 { // Skip single char noise
+				continue
 			}
-		}
-		if updatedAt.IsZero() {
-			updatedAt = time.Now()
-		}
 
-		values := []interface{}{pkValue, tableName, searchText, string(originalData), isDeleted, updatedAt}
+			tokenLower := strings.ToLower(token)
+			tokenHash := hashToken(tokenLower)
 
-		for _, colName := range searchableColumns {
-			colValue := ""
-			if val, ok := record[colName]; ok && val != nil {
-				colValue = fmt.Sprintf("%v", val)
-			} else if val, ok := record[strings.Title(colName)]; ok && val != nil {
-				colValue = fmt.Sprintf("%v", val)
+			// 1. Token Stream
+			if err := tokenBatch.Append(tokenHash, tokenLower, global_id, tableName, now); err != nil {
+				log.Printf("warn: failed token append: %v", err)
 			}
-			values = append(values, colValue)
-		}
 
-		if err := batch.Append(values...); err != nil {
-			log.Printf("[BulkIndex] Failed to append record %s: %v", pkValue, err)
+			// 2. Stats (Deduplicated per record)
+			if !seenTokens[tokenHash] {
+				seenTokens[tokenHash] = true
+				if err := statsBatch.Append(tokenHash, tokenLower, tableName, 1, now); err != nil {
+					log.Printf("warn: failed stats append: %v", err)
+				}
+			}
 		}
 	}
 
 	if err := batch.Send(); err != nil {
-		log.Printf("[BulkIndex] Batch send failed for %s: %v", tableName, err)
-		return fmt.Errorf("batch send failed: %w", err)
+		return fmt.Errorf("main batch send failed: %w", err)
+	}
+	if err := tokenBatch.Send(); err != nil {
+		return fmt.Errorf("token batch send failed: %w", err)
+	}
+	if err := statsBatch.Send(); err != nil {
+		return fmt.Errorf("stats batch send failed: %w", err)
 	}
 
 	duration := time.Since(startTime)
-	recordsPerSecond := float64(len(records)) / duration.Seconds()
-	log.Printf("[BulkIndex] %s: %d records in %v (%.0f rec/sec)",
-		tableName, len(records), duration, recordsPerSecond)
+	if len(records) > 100 {
+		log.Printf("[BulkIndex] %s: %d records in %v", tableName, len(records), duration)
+	}
 
 	return nil
 }
 
-func (r *SearchRepository) extractSearchableText(record map[string]interface{}, table *schema.TableInfo) string {
-	var textParts []string
-	for _, col := range table.Columns {
-		if col.DataType == "character varying" || col.DataType == "text" {
-			if val, ok := record[col.Name]; ok && val != nil {
-				textParts = append(textParts, fmt.Sprintf("%v", val))
-			}
+func getUint64FromInterface(val interface{}) uint64 {
+	switch v := val.(type) {
+	case int:
+		return uint64(v)
+	case int8:
+		return uint64(v)
+	case int16:
+		return uint64(v)
+	case int32:
+		return uint64(v)
+	case int64:
+		return uint64(v)
+	case uint:
+		return uint64(v)
+	case uint8:
+		return uint64(v)
+	case uint16:
+		return uint64(v)
+	case uint32:
+		return uint64(v)
+	case uint64:
+		return v
+	case float32:
+		return uint64(v)
+	case float64:
+		return uint64(v)
+	case string:
+		if v == "" {
+			return 0
+		}
+		if x, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return x
+		}
+	case []byte:
+		if x, err := strconv.ParseUint(string(v), 10, 64); err == nil {
+			return x
 		}
 	}
-	return strings.ToLower(strings.Join(textParts, " "))
+	return 0
+}
+
+func (r *SearchRepository) getTableIDDeterministic(tableName string) uint16 {
+	h := fnv.New64a()
+	h.Write([]byte(tableName))
+	hash := h.Sum64()
+	return uint16(hash >> 48)
+}
+
+func generateCompactGlobalID(tableID uint16, localID uint64) uint64 {
+	return (uint64(tableID) << 48) | (localID & 0xFFFFFFFFFFFF)
+}
+
+func hashToken(token string) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(strings.ToLower(token)))
+	return h.Sum64()
+}
+
+// Legacy function kept for compatibility if needed elsewhere
+func (r *SearchRepository) extractSearchableText(record map[string]interface{}, table *schema.TableInfo) string {
+	return ""
+}
+
+func (r *SearchRepository) BulkIndexTokens(ctx context.Context, tableName string, records []map[string]interface{}) error {
+	// Deprecated
+	return nil
+}
+
+// ⭐ SEARCH FUNCTION
+func (r *SearchRepository) SearchFullHistoryBitmap(ctx context.Context, searchTerm string, limit int, cursor string) (*SearchResult, error) {
+	searchTerm = strings.ToLower(strings.TrimSpace(searchTerm))
+	tokens := strings.Fields(searchTerm)
+
+	if len(tokens) == 0 {
+		return &SearchResult{Data: []map[string]interface{}{}}, nil
+	}
+
+	var tokenHashes []uint64
+	for _, t := range tokens {
+		tokenHashes = append(tokenHashes, hashToken(t))
+	}
+
+	c, _ := unmarshalCursor(cursor)
+
+	var bitmapQuery string
+
+	if len(tokenHashes) == 1 {
+		bitmapQuery = fmt.Sprintf(`
+        SELECT groupBitmapMergeState(ids_bitmap)
+        FROM search_token_bitmap 
+        WHERE token_hash = %d 
+    `, tokenHashes[0])
+	} else {
+		var views []string
+		for i, hash := range tokenHashes {
+			views = append(views, fmt.Sprintf(
+				"(SELECT groupBitmapMergeState(ids_bitmap) FROM search_token_bitmap WHERE token_hash = %d) as b%d",
+				hash, i,
+			))
+		}
+
+		intersection := "b0"
+		for i := 1; i < len(views); i++ {
+			intersection = fmt.Sprintf("bitmapAnd(%s, b%d)", intersection, i)
+		}
+
+		bitmapQuery = fmt.Sprintf("SELECT %s FROM (SELECT %s)", intersection, strings.Join(views, ", "))
+	}
+
+	finalQuery := fmt.Sprintf(`
+    SELECT arrayJoin(bitmapToArray(ifNull(
+        (%s),
+        bitmapBuild(emptyArrayUInt64())
+    ))) as global_id
+`, bitmapQuery)
+
+	var whereClause string
+	if c.LastGlobalID != "" {
+		parsedID, err := strconv.ParseUint(c.LastGlobalID, 10, 64)
+		if err == nil {
+			whereClause = fmt.Sprintf(" WHERE global_id < %d", parsedID)
+		}
+	}
+
+	query := fmt.Sprintf(`
+    SELECT global_id FROM (
+        %s
+    ) 
+    %s
+    ORDER BY global_id DESC
+    LIMIT %d
+`, finalQuery, whereClause, limit+1)
+
+	rows, err := r.conn.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("bitmap query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var globalIDs []uint64
+	for rows.Next() {
+		var id uint64
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		globalIDs = append(globalIDs, id)
+	}
+
+	if len(globalIDs) == 0 {
+		return &SearchResult{
+			Data:         []map[string]interface{}{},
+			Count:        0,
+			HasMore:      false,
+			Aggregations: make(map[string]int),
+		}, nil
+	}
+
+	idsByTable := make(map[string][]uint64)
+	for _, gid := range globalIDs {
+		tid := extractTableID(gid)
+		tableName := r.getTableName(tid)
+
+		if tableName == "unknown" {
+			continue
+		}
+		idsByTable[tableName] = append(idsByTable[tableName], gid)
+	}
+
+	var allRecords []map[string]interface{}
+	var wgData sync.WaitGroup
+	var muData sync.Mutex
+
+	for tableName, gIDs := range idsByTable {
+		wgData.Add(1)
+		go func(tName string, tIds []uint64) {
+			defer wgData.Done()
+
+			idStrs := uint64SliceToStrings(tIds)
+			inClause := strings.Join(idStrs, ",")
+
+			// ⭐ UPDATED: Query only needed columns (no s_indx)
+			lookupQuery := fmt.Sprintf(`
+            SELECT original_data, updated_at, global_id
+            FROM search_%s
+            WHERE global_id IN (%s) AND is_deleted = 0
+            ORDER BY global_id DESC
+        `, tName, inClause)
+
+			dataRows, err := r.conn.Query(ctx, lookupQuery)
+			if err != nil {
+				return
+			}
+			defer dataRows.Close()
+
+			for dataRows.Next() {
+				var data string
+				var t time.Time
+				var globalID uint64
+
+				if err := dataRows.Scan(&data, &t, &globalID); err != nil {
+					continue
+				}
+
+				var record map[string]interface{}
+				if err := json.Unmarshal([]byte(data), &record); err != nil {
+					continue
+				}
+
+				// ⭐ Reconstruct ID for UI
+				localID := extractLocalID(globalID)
+
+				record["_source_table"] = tName
+				record["updated_at"] = t
+				record["id"] = localID // Return standard ID
+				record["global_id"] = strconv.FormatUint(globalID, 10)
+
+				muData.Lock()
+				allRecords = append(allRecords, record)
+				muData.Unlock()
+			}
+		}(tableName, gIDs)
+	}
+	wgData.Wait()
+
+	// ... (inside SearchFullHistoryBitmap, after wgData.Wait()) ...
+
+	// 8. Final Sort by Global ID DESC
+	// FIX: Parse strings back to uint64 for correct numeric sorting
+	sort.Slice(allRecords, func(i, j int) bool {
+		var idI, idJ uint64
+		// Parse string to uint64
+		if s, ok := allRecords[i]["global_id"].(string); ok {
+			idI, _ = strconv.ParseUint(s, 10, 64)
+		}
+		if s, ok := allRecords[j]["global_id"].(string); ok {
+			idJ, _ = strconv.ParseUint(s, 10, 64)
+		}
+		return idI > idJ
+	})
+
+	// 9. Pagination Logic
+	hasMore := len(allRecords) > limit
+	if hasMore {
+		allRecords = allRecords[:limit]
+	}
+
+	// 10. Generate Next Cursor
+	var nextCursor string
+	if len(allRecords) > 0 {
+		lastRecord := allRecords[len(allRecords)-1]
+
+		// FIX: global_id is now a string, extract it
+		var lastGlobalID uint64
+		if idStr, ok := lastRecord["global_id"].(string); ok {
+			lastGlobalID, _ = strconv.ParseUint(idStr, 10, 64)
+		}
+
+		if hasMore {
+			nextCursor, _ = marshalCursor(SearchCursor{LastGlobalID: fmt.Sprintf("%d", lastGlobalID)})
+		}
+	}
+
+	// 11. Stats
+	pageAggregations := make(map[string]int)
+	for _, r := range allRecords {
+		if t, ok := r["_source_table"].(string); ok {
+			pageAggregations[t]++
+		}
+	}
+
+	return &SearchResult{
+		Data:         allRecords,
+		Count:        len(allRecords),
+		HasMore:      hasMore,
+		NextCursor:   nextCursor,
+		Aggregations: pageAggregations,
+	}, nil
 }
 
 func (r *SearchRepository) IndexRecord(ctx context.Context, tableName string, id string, record map[string]interface{}) error {
@@ -252,442 +701,22 @@ func (r *SearchRepository) DeleteRecord(ctx context.Context, tableName string, i
 		return fmt.Errorf("failed to ensure search index: %w", err)
 	}
 
+	tableID := r.getTableIDDeterministic(tableName)
+	pkVal := getUint64FromInterface(id)
+	if pkVal == 0 {
+		return fmt.Errorf("invalid id format: %s", id)
+	}
+	globalID := generateCompactGlobalID(tableID, pkVal)
+
 	indexTableName := fmt.Sprintf("search_%s", tableName)
+
+	// ⭐ UPDATED: No s_indx
 	insertSQL := fmt.Sprintf(`
-		INSERT INTO %s (id, table_name, search_text, original_data, is_deleted)
-		VALUES (?, ?, '', '{}', 1)
-	`, indexTableName)
-
-	return r.conn.Exec(ctx, insertSQL, id, tableName)
-}
-
-func (r *SearchRepository) GlobalSearchParallel(ctx context.Context, searchTerm string, limit int, cursor string, exactMatch bool, dateFrom *time.Time) (*SearchResult, error) {
-	if !r.IsAvailable() {
-		return nil, fmt.Errorf("clickhouse not available")
-	}
-
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-
-	searchTerm = strings.ToLower(strings.TrimSpace(searchTerm))
-	if searchTerm == "" {
-		return nil, fmt.Errorf("search term is required")
-	}
-
-	var cursorData SearchCursor
-	if cursor != "" {
-		decoded, err := base64.URLEncoding.DecodeString(cursor)
-		if err == nil {
-			json.Unmarshal(decoded, &cursorData)
-		}
-	}
-
-	// ✅ FIX: Exclude entity tables from parallel search
-	tablesQuery := `
-		SELECT name
-		FROM system.tables
-		WHERE database = currentDatabase()
-		  AND name LIKE 'search_%'
-		  AND name NOT IN ('search_tokens', 'search_entities')
-	`
-
-	rows, err := r.conn.Query(ctx, tablesQuery)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get table list: %w", err)
-	}
-	defer rows.Close()
-
-	var searchTables []string
-	for rows.Next() {
-		var tableName string
-		if err := rows.Scan(&tableName); err != nil {
-			continue
-		}
-		searchTables = append(searchTables, tableName)
-	}
-
-	if len(searchTables) == 0 {
-		return &SearchResult{Data: []map[string]interface{}{}, Count: 0}, nil
-	}
-
-	log.Printf("[GlobalSearchParallel] Searching %d tables for: '%s'", len(searchTables), searchTerm)
-
-	totalTablesQueried := len(searchTables)
-
-	perTableLimit := ((limit / len(searchTables)) + 1) * 2
-	if perTableLimit < 10 {
-		perTableLimit = 10
-	}
-
-	tokens := strings.Fields(searchTerm)
-
-	type tableResult struct {
-		tableName string
-		records   []map[string]interface{}
-		err       error
-	}
-
-	resultsChan := make(chan tableResult, len(searchTables))
-	var wg sync.WaitGroup
-
-	for _, tableName := range searchTables {
-		wg.Add(1)
-		go func(tName string) {
-			defer wg.Done()
-
-			var prewhereConditions []string
-			prewhereConditions = append(prewhereConditions, "is_deleted = 0")
-
-			if dateFrom != nil && !dateFrom.IsZero() {
-				prewhereConditions = append(prewhereConditions,
-					fmt.Sprintf("updated_at >= toDateTime('%s')", dateFrom.Format("2006-01-02 15:04:05")))
-			}
-
-			if !cursorData.LastUpdatedAt.IsZero() {
-				prewhereConditions = append(prewhereConditions, fmt.Sprintf(
-					"(updated_at < toDateTime('%s') OR (updated_at = toDateTime('%s') AND id > '%s'))",
-					cursorData.LastUpdatedAt.Format("2006-01-02 15:04:05"),
-					cursorData.LastUpdatedAt.Format("2006-01-02 15:04:05"),
-					cursorData.LastID,
-				))
-			}
-
-			var whereConditions []string
-			if exactMatch {
-				for _, token := range tokens {
-					whereConditions = append(whereConditions, fmt.Sprintf(
-						"(position(search_text, ' %s ') > 0 OR position(search_text, '%s ') = 1 OR position(search_text, ' %s') > 0)",
-						token, token, token,
-					))
-				}
-			} else {
-				for _, token := range tokens {
-					whereConditions = append(whereConditions, fmt.Sprintf("hasToken(search_text, '%s')", token))
-				}
-			}
-
-			prewhereClause := strings.Join(prewhereConditions, " AND ")
-			whereClause := strings.Join(whereConditions, " AND ")
-
-			query := fmt.Sprintf(`
-				SELECT id, table_name, original_data, updated_at
-				FROM %s
-				PREWHERE %s
-				WHERE %s
-				ORDER BY updated_at DESC, id ASC
-				LIMIT %d
-			`, tName, prewhereClause, whereClause, perTableLimit)
-
-			tableRows, err := r.conn.Query(ctx, query)
-			if err != nil {
-				log.Printf("[GlobalSearchParallel] ❌ %s error: %v", tName, err)
-				resultsChan <- tableResult{tableName: tName, err: err}
-				return
-			}
-			defer tableRows.Close()
-
-			var records []map[string]interface{}
-			for tableRows.Next() {
-				var id, sourceTable, originalData string
-				var updatedAt time.Time
-
-				if err := tableRows.Scan(&id, &sourceTable, &originalData, &updatedAt); err != nil {
-					continue
-				}
-
-				var record map[string]interface{}
-				if err := json.Unmarshal([]byte(originalData), &record); err != nil {
-					record = map[string]interface{}{"id": id}
-				}
-
-				record["_source_table"] = sourceTable
-				record["_clickhouse_table"] = tName
-				record["id"] = id
-				record["_updated_at"] = updatedAt
-				records = append(records, record)
-			}
-
-			log.Printf("[GlobalSearchParallel] ✅ %s: %d results", tName, len(records))
-			resultsChan <- tableResult{tableName: tName, records: records}
-		}(tableName)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultsChan)
-	}()
-
-	var allResults []map[string]interface{}
-	successCount := 0
-	for result := range resultsChan {
-		if result.err != nil {
-			continue
-		}
-		successCount++
-		allResults = append(allResults, result.records...)
-	}
-
-	sort.Slice(allResults, func(i, j int) bool {
-		ti, _ := allResults[i]["_updated_at"].(time.Time)
-		tj, _ := allResults[j]["_updated_at"].(time.Time)
-		if ti.Equal(tj) {
-			idI, _ := allResults[i]["id"].(string)
-			idJ, _ := allResults[j]["id"].(string)
-			return idI < idJ
-		}
-		return ti.After(tj)
-	})
-
-	hasMore := len(allResults) > limit
-	if len(allResults) > limit {
-		allResults = allResults[:limit]
-	}
-
-	var nextCursor string
-	if hasMore && len(allResults) > 0 {
-		lastResult := allResults[len(allResults)-1]
-		lastUpdatedAt, _ := lastResult["_updated_at"].(time.Time)
-		lastID, _ := lastResult["id"].(string)
-
-		cursorJSON, _ := json.Marshal(SearchCursor{
-			LastID:        lastID,
-			LastUpdatedAt: lastUpdatedAt,
-		})
-		nextCursor = base64.URLEncoding.EncodeToString(cursorJSON)
-	}
-
-	log.Printf("[GlobalSearchParallel] 🎯 %d results from %d tables (hasMore: %v)", len(allResults), successCount, hasMore)
-
-	return &SearchResult{
-		Data:          allResults,
-		Count:         len(allResults),
-		HasMore:       hasMore,
-		NextCursor:    nextCursor,
-		TablesQueried: totalTablesQueried,
-	}, nil
-}
-
-func (r *SearchRepository) GlobalSearch(ctx context.Context, searchTerm string, limit int, exactMatch bool) (*SearchResult, error) {
-	return r.GlobalSearchParallel(ctx, searchTerm, limit, "", exactMatch, nil)
-}
-
-func (r *SearchRepository) MultiColumnSearch(ctx context.Context, params SearchParams) (*SearchResult, error) {
-	if !r.IsAvailable() {
-		return nil, fmt.Errorf("clickhouse not available")
-	}
-
-	if err := r.EnsureSearchIndex(ctx, params.TableName); err != nil {
-		return nil, fmt.Errorf("failed to ensure search index: %w", err)
-	}
-
-	searchTerm := strings.ToLower(strings.TrimSpace(params.SearchTerm))
-	if searchTerm == "" {
-		return nil, fmt.Errorf("search term is required")
-	}
-
-	if params.Limit <= 0 || params.Limit > 100 {
-		params.Limit = 20
-	}
-
-	tokens := strings.Fields(searchTerm)
-	var searchConditions []string
-	for _, token := range tokens {
-		searchConditions = append(searchConditions, fmt.Sprintf("hasToken(search_text, '%s')", token))
-	}
-
-	whereClause := strings.Join(searchConditions, " AND ")
-	indexTableName := fmt.Sprintf("search_%s", params.TableName)
-
-	query := fmt.Sprintf(`
-		SELECT id, table_name, original_data
-		FROM %s
-		PREWHERE is_deleted = 0 AND (%s)
-		ORDER BY updated_at DESC
-		LIMIT %d
-	`, indexTableName, whereClause, params.Limit+1)
-
-	log.Printf("[MultiColumnSearch] %s: '%s' (limit: %d)", params.TableName, searchTerm, params.Limit)
-
-	rows, err := r.conn.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("search query failed: %w", err)
-	}
-	defer rows.Close()
-
-	var results []map[string]interface{}
-	for rows.Next() {
-		var id, tableName, originalData string
-		if err := rows.Scan(&id, &tableName, &originalData); err != nil {
-			continue
-		}
-
-		var record map[string]interface{}
-		if err := json.Unmarshal([]byte(originalData), &record); err != nil {
-			record = map[string]interface{}{"id": id}
-		}
-
-		results = append(results, record)
-		if len(results) >= params.Limit+1 {
-			break
-		}
-	}
-
-	hasMore := len(results) > params.Limit
-	if hasMore {
-		results = results[:params.Limit]
-	}
-
-	var nextCursor string
-	if hasMore && len(results) > 0 {
-		lastRecord := results[len(results)-1]
-		cursorData := map[string]interface{}{
-			"last_id": lastRecord["id"],
-			"offset":  params.Limit,
-		}
-		cursorJSON, _ := json.Marshal(cursorData)
-		nextCursor = base64.URLEncoding.EncodeToString(cursorJSON)
-	}
-
-	log.Printf("[MultiColumnSearch] %s: Returned %d results", params.TableName, len(results))
-
-	return &SearchResult{
-		Data:          results,
-		NextCursor:    nextCursor,
-		HasMore:       hasMore,
-		Count:         len(results),
-		SearchColumns: params.SearchColumns,
-	}, nil
-}
-
-func (r *SearchRepository) SearchWithCursor(
-	ctx context.Context,
-	tableName, searchTerm string,
-	searchColumns []string,
-	limit int,
-	cursorStr string,
-) ([]map[string]interface{}, string, bool, error) {
-	if !r.IsAvailable() {
-		return nil, "", false, fmt.Errorf("ClickHouse not available")
-	}
-
-	searchTable := fmt.Sprintf("search_%s", tableName)
-
-	var cursor *SearchCursor
-	if cursorStr != "" {
-		decoded, err := base64.StdEncoding.DecodeString(cursorStr)
-		if err == nil {
-			var c SearchCursor
-			if json.Unmarshal(decoded, &c) == nil {
-				cursor = &c
-			}
-		}
-	}
-
-	var conditions []string
-	escapedTerm := strings.ReplaceAll(searchTerm, "'", "\\'")
-	for _, col := range searchColumns {
-		conditions = append(conditions, fmt.Sprintf("hasToken(`%s`, '%s')", col, escapedTerm))
-	}
-
-	whereClause := fmt.Sprintf("is_deleted = 0 AND (%s)", strings.Join(conditions, " OR "))
-
-	if cursor != nil {
-		whereClause += fmt.Sprintf(
-			" AND (updated_at < toDateTime('%s') OR (updated_at = toDateTime('%s') AND id > '%s'))",
-			cursor.LastUpdatedAt.Format("2006-01-02 15:04:05"),
-			cursor.LastUpdatedAt.Format("2006-01-02 15:04:05"),
-			cursor.LastID,
-		)
-	}
-
-	searchQuery := fmt.Sprintf(`
-		SELECT id, original_data, updated_at
-		FROM %s
-		PREWHERE %s
-		ORDER BY updated_at DESC, id ASC
-		LIMIT %d
-	`, searchTable, whereClause, limit+1)
-
-	rows, err := r.conn.Query(ctx, searchQuery)
-	if err != nil {
-		return nil, "", false, fmt.Errorf("search query failed: %w", err)
-	}
-	defer rows.Close()
-
-	results := make([]map[string]interface{}, 0, limit)
-	var lastID string
-	var lastUpdatedAt time.Time
-
-	for rows.Next() {
-		var id, originalData string
-		var updatedAt time.Time
-
-		if err := rows.Scan(&id, &originalData, &updatedAt); err != nil {
-			log.Printf("[SearchWithCursor] Failed to scan row: %v", err)
-			continue
-		}
-
-		var record map[string]interface{}
-		if err := json.Unmarshal([]byte(originalData), &record); err != nil {
-			record = map[string]interface{}{"id": id}
-		}
-
-		results = append(results, record)
-		lastID = id
-		lastUpdatedAt = updatedAt
-
-		if len(results) >= limit+1 {
-			break
-		}
-	}
-
-	hasMore := len(results) > limit
-	if hasMore {
-		results = results[:limit]
-	}
-
-	var nextCursor string
-	if hasMore && len(results) > 0 {
-		cursorData := SearchCursor{
-			LastID:        lastID,
-			LastUpdatedAt: lastUpdatedAt,
-		}
-		cursorJSON, _ := json.Marshal(cursorData)
-		nextCursor = base64.StdEncoding.EncodeToString(cursorJSON)
-	}
-
-	log.Printf("[SearchWithCursor] %s: Returning %d results, hasMore=%v", tableName, len(results), hasMore)
-	return results, nextCursor, hasMore, nil
-}
-
-func (r *SearchRepository) GetSyncStats(ctx context.Context, tableName string) (*SyncStats, error) {
-	if !r.IsAvailable() {
-		return nil, fmt.Errorf("clickhouse not available")
-	}
-
-	indexTableName := fmt.Sprintf("search_%s", tableName)
-	query := fmt.Sprintf(`
-		SELECT
-			COUNT(*) as record_count,
-			MAX(synced_at) as last_sync
-		FROM %s
-		WHERE is_deleted = 0
-	`, indexTableName)
-
-	var recordCount int
-	var lastSync time.Time
-
-	row := r.conn.QueryRow(ctx, query)
-	if err := row.Scan(&recordCount, &lastSync); err != nil {
-		return nil, fmt.Errorf("failed to get sync stats: %w", err)
-	}
-
-	return &SyncStats{
-		TableName:   tableName,
-		RecordCount: recordCount,
-		LastSyncAt:  lastSync,
-	}, nil
+        INSERT INTO %s (global_id, original_data, is_deleted, updated_at)
+        VALUES (?, '', 1, now())
+    `, indexTableName)
+
+	return r.conn.Exec(ctx, insertSQL, globalID)
 }
 
 func (r *SearchRepository) GetEntityRepository() *EntityRepository {
@@ -701,28 +730,118 @@ func (r *SearchRepository) InitializeEntitySearch(ctx context.Context) error {
 	return r.entityRepo.Initialize(ctx)
 }
 
-func (r *SearchRepository) SearchHybrid(ctx context.Context, searchTerm string, limit int, cursor string) (*SearchResult, error) {
+func (r *SearchRepository) SearchWithCursor(
+	ctx context.Context,
+	tableName, searchTerm string,
+	searchColumns []string,
+	limit int,
+	cursorStr string,
+) ([]map[string]interface{}, string, bool, error) {
+	res, err := r.SearchFullHistoryBitmap(ctx, searchTerm, limit, cursorStr)
+	if err != nil {
+		return nil, "", false, err
+	}
+	return res.Data, res.NextCursor, res.HasMore, nil
+}
+
+func (r *SearchRepository) GetSyncStats(ctx context.Context, tableName string) (*SyncStats, error) {
 	if !r.IsAvailable() {
 		return nil, fmt.Errorf("clickhouse not available")
 	}
 
-	words := strings.Fields(searchTerm)
-	if len(words) >= 2 && r.entityRepo != nil && r.entityRepo.IsEnabled() {
-		log.Printf("[Hybrid] Trying entity search for: %s", searchTerm)
+	indexTableName := fmt.Sprintf("search_%s", tableName)
+	query := fmt.Sprintf(`
+        SELECT
+            COUNT(*) as record_count,
+            MAX(synced_at) as last_sync
+        FROM %s
+        WHERE is_deleted = 0
+    `, indexTableName)
 
-		results, totalMatches, err := r.entityRepo.SearchThreeLayer(ctx, searchTerm, limit)
-		if err == nil && len(results) > 0 {
-			log.Printf("[Hybrid] Entity search succeeded: %d results", len(results))
-			return &SearchResult{
-				Data:    results,
-				Count:   len(results),
-				HasMore: totalMatches > limit,
-			}, nil
-		}
-
-		log.Printf("[Hybrid] Entity search returned no results, falling back to parallel")
+	var recordCount int
+	var lastSync time.Time
+	row := r.conn.QueryRow(ctx, query)
+	if err := row.Scan(&recordCount, &lastSync); err != nil {
+		return nil, fmt.Errorf("failed to get sync stats: %w", err)
 	}
 
-	log.Printf("[Hybrid] Using parallel search for: %s", searchTerm)
-	return r.GlobalSearchParallel(ctx, searchTerm, limit, cursor, false, nil)
+	return &SyncStats{
+		TableName:   tableName,
+		RecordCount: recordCount,
+		LastSyncAt:  lastSync,
+	}, nil
+}
+
+func (r *SearchRepository) getTableName(id uint16) string {
+	allTables := r.registry.GetAllTables()
+	for _, table := range allTables {
+		if r.getTableIDDeterministic(table.Name) == id {
+			return table.Name
+		}
+	}
+	return "unknown"
+}
+
+func extractTableID(globalID uint64) uint16 {
+	return uint16(globalID >> 48)
+}
+
+func (r *SearchRepository) validateTableIDs() error {
+	seen := map[uint16]string{}
+	for _, t := range r.registry.GetAllTables() {
+		id := r.getTableIDDeterministic(t.Name)
+		if prev, ok := seen[id]; ok && prev != t.Name {
+			return fmt.Errorf("table id collision detected: %d -> %s and %s", id, prev, t.Name)
+		}
+		seen[id] = t.Name
+	}
+	return nil
+}
+
+func (r *SearchRepository) InsertDeadLetter(ctx context.Context, tableName string, startID, endID uint64, attempts uint8, lastError, sampleData string) error {
+	if err := validateTableName(tableName); err != nil {
+		return err
+	}
+	query := `
+        INSERT INTO search_index_errors (table_name, start_id, end_id, attempts, last_error, sample_data, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, now())
+    `
+	if err := r.conn.Exec(ctx, query, tableName, startID, endID, attempts, lastError, sampleData); err != nil {
+		return fmt.Errorf("failed to insert dead-letter: %w", err)
+	}
+	return nil
+}
+
+func (r *SearchRepository) IncRetryCount(n uint64) {
+	atomic.AddUint64(&r.retryCount, n)
+}
+
+func (r *SearchRepository) IncDeadLetterCount(n uint64) {
+	atomic.AddUint64(&r.deadLetterCount, n)
+}
+
+func (r *SearchRepository) IncCollisionCount(n uint64) {
+	atomic.AddUint64(&r.collisionCount, n)
+}
+
+func (r *SearchRepository) SetIndexLag(v uint64) {
+	atomic.StoreUint64(&r.indexLagGauge, v)
+}
+
+type RepoMetrics struct {
+	RetryCount     uint64 `json:"retry_count"`
+	DeadLetter     uint64 `json:"dead_letter_count"`
+	Collisions     uint64 `json:"table_id_collisions"`
+	IndexLagGauge  uint64 `json:"index_lag"`
+	TableIDChecked bool   `json:"table_id_validated"`
+}
+
+func (r *SearchRepository) GetMetrics() RepoMetrics {
+	return RepoMetrics{
+		RetryCount:     atomic.LoadUint64(&r.retryCount),
+		DeadLetter:     atomic.LoadUint64(&r.deadLetterCount),
+		Collisions:     atomic.LoadUint64(&r.collisionCount),
+		IndexLagGauge:  atomic.LoadUint64(&r.indexLagGauge),
+		TableIDChecked: r.tableIDValidated,
+	}
 }

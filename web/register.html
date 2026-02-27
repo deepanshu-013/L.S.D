@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register - L.S.D API</title>
+    <meta name="description" content="Create your L.S.D API account and get your API key">
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        /* Auth page specific styles */
+        .auth-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            position: relative;
+        }
+
+        .auth-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 2.5rem;
+            width: 100%;
+            max-width: 420px;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .auth-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .auth-logo {
+            width: 64px;
+            height: 64px;
+            background: var(--accent-gradient);
+            border-radius: var(--radius-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.75rem;
+            box-shadow: var(--shadow-glow);
+        }
+
+        .auth-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+        }
+
+        .auth-subtitle {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .password-wrapper {
+            position: relative;
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            font-size: 1rem;
+        }
+
+        .password-toggle:hover {
+            color: var(--text-primary);
+        }
+
+        .password-strength {
+            margin-top: 0.75rem;
+        }
+
+        .strength-bars {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 0.5rem;
+        }
+
+        .strength-bar {
+            flex: 1;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--border);
+            transition: background 0.3s;
+        }
+
+        .strength-bar.active.weak { background: var(--error); }
+        .strength-bar.active.medium { background: var(--warning); }
+        .strength-bar.active.strong { background: var(--success); }
+        
+        .strength-requirements {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.25rem 0.5rem;
+        }
+
+        .requirement {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .requirement.met {
+            color: var(--success);
+        }
+
+        .requirement-icon {
+            width: 12px;
+            height: 12px;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            cursor: pointer;
+            line-height: 1.4;
+        }
+
+        .checkbox-label input {
+            accent-color: var(--accent);
+            width: 16px;
+            height: 16px;
+            margin-top: 2px;
+            flex-shrink: 0;
+        }
+
+        .checkbox-label a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        .checkbox-label a:hover {
+            text-decoration: underline;
+        }
+
+        .auth-error {
+            background: var(--error-light);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: var(--radius-md);
+            padding: 0.75rem 1rem;
+            color: var(--error);
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .auth-footer {
+            text-align: center;
+            margin-top: 1.5rem;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .auth-footer a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .auth-footer a:hover {
+            text-decoration: underline;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Back link */
+        .back-link {
+            position: absolute;
+            top: 2rem;
+            left: 2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+
+        .back-link:hover {
+            color: var(--text-primary);
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-gradient"></div>
+    <div class="grid-pattern"></div>
+
+    <a href="/" class="back-link">← Back to Home</a>
+
+    <div class="auth-container">
+        <div class="auth-card animate-fade-in">
+            <div class="auth-header">
+                <div class="auth-logo">🚀</div>
+                <h1 class="auth-title">Create account</h1>
+                <p class="auth-subtitle">Get your API key and start building</p>
+            </div>
+            
+            <div class="auth-error" id="error-message"></div>
+            
+            <form id="register-form">
+                <div class="form-group">
+                    <label class="form-label" for="username">Username</label>
+                    <input 
+                        type="text" 
+                        id="username" 
+                        class="form-input" 
+                        placeholder="johndoe"
+                        required
+                        minlength="3"
+                        maxlength="30"
+                        pattern="[a-zA-Z0-9_]+"
+                        autocomplete="username"
+                    >
+                    <p class="form-hint">3-30 characters, letters, numbers, underscores only</p>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="email">Email</label>
+                    <input 
+                        type="email" 
+                        id="email" 
+                        class="form-input" 
+                        placeholder="name@example.com"
+                        required
+                        autocomplete="email"
+                    >
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="password">Password</label>
+                    <div class="password-wrapper">
+                        <input 
+                            type="password" 
+                            id="password" 
+                            class="form-input" 
+                            placeholder="••••••••"
+                            required
+                            autocomplete="new-password"
+                        >
+                        <button type="button" class="password-toggle" onclick="togglePassword('password')">
+                            <span id="toggle-icon-1">👁️</span>
+                        </button>
+                    </div>
+                    <div class="password-strength" id="password-strength" style="display: none;">
+                        <div class="strength-bars">
+                            <div class="strength-bar" id="bar-1"></div>
+                            <div class="strength-bar" id="bar-2"></div>
+                            <div class="strength-bar" id="bar-3"></div>
+                            <div class="strength-bar" id="bar-4"></div>
+                            <div class="strength-bar" id="bar-5"></div>
+                        </div>
+                        <div class="strength-requirements">
+                            <div class="requirement" id="req-length">
+                                <svg class="requirement-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+                                8+ characters
+                            </div>
+                            <div class="requirement" id="req-upper">
+                                <svg class="requirement-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+                                Uppercase
+                            </div>
+                            <div class="requirement" id="req-lower">
+                                <svg class="requirement-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+                                Lowercase
+                            </div>
+                            <div class="requirement" id="req-number">
+                                <svg class="requirement-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+                                Number
+                            </div>
+                            <div class="requirement" id="req-special">
+                                <svg class="requirement-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+                                Special char
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="confirm-password">Confirm Password</label>
+                    <div class="password-wrapper">
+                        <input 
+                            type="password" 
+                            id="confirm-password" 
+                            class="form-input" 
+                            placeholder="••••••••"
+                            required
+                            autocomplete="new-password"
+                        >
+                        <button type="button" class="password-toggle" onclick="togglePassword('confirm-password')">
+                            <span id="toggle-icon-2">👁️</span>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="agree-terms" required>
+                        I agree to the <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>
+                    </label>
+                </div>
+                
+                <button type="submit" class="btn btn-primary btn-lg w-full" id="submit-btn">
+                    Create account
+                </button>
+            </form>
+            
+            <div class="auth-footer">
+                Already have an account? <a href="/login">Sign in</a>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const form = document.getElementById('register-form');
+        const errorDiv = document.getElementById('error-message');
+        const submitBtn = document.getElementById('submit-btn');
+        const passwordInput = document.getElementById('password');
+        const confirmPasswordInput = document.getElementById('confirm-password');
+        const strengthDiv = document.getElementById('password-strength');
+        
+        // Theme management
+        function initTheme() {
+            const savedTheme = localStorage.getItem('lsd-theme') || 'dark';
+            document.body.classList.toggle('light-mode', savedTheme === 'light');
+        }
+        initTheme();
+        
+        function togglePassword(inputId) {
+            const input = document.getElementById(inputId);
+            const iconId = inputId === 'password' ? 'toggle-icon-1' : 'toggle-icon-2';
+            const icon = document.getElementById(iconId);
+            
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.textContent = '🙈';
+            } else {
+                input.type = 'password';
+                icon.textContent = '👁️';
+            }
+        }
+        
+        function checkPasswordStrength(password) {
+            return {
+                length: password.length >= 8,
+                upper: /[A-Z]/.test(password),
+                lower: /[a-z]/.test(password),
+                number: /[0-9]/.test(password),
+                special: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)
+            };
+        }
+        
+        function updateStrengthIndicator(password) {
+            if (!password) {
+                strengthDiv.style.display = 'none';
+                return;
+            }
+            
+            strengthDiv.style.display = 'block';
+            const checks = checkPasswordStrength(password);
+            const score = Object.values(checks).filter(Boolean).length;
+            
+            // Update bars
+            const bars = ['bar-1', 'bar-2', 'bar-3', 'bar-4', 'bar-5'];
+            let strengthClass = score <= 2 ? 'weak' : score <= 4 ? 'medium' : 'strong';
+            
+            bars.forEach((barId, index) => {
+                const bar = document.getElementById(barId);
+                bar.classList.remove('weak', 'medium', 'strong');
+                if (index < score) {
+                    bar.classList.add('active', strengthClass);
+                } else {
+                    bar.classList.remove('active');
+                }
+            });
+            
+            // Update requirements
+            const requirements = {
+                'req-length': checks.length,
+                'req-upper': checks.upper,
+                'req-lower': checks.lower,
+                'req-number': checks.number,
+                'req-special': checks.special
+            };
+            
+            Object.entries(requirements).forEach(([id, met]) => {
+                const el = document.getElementById(id);
+                const icon = el.querySelector('.requirement-icon');
+                if (met) {
+                    el.classList.add('met');
+                    icon.innerHTML = '<path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.78 5.28-4.5 6a.75.75 0 0 1-1.18.02l-2.25-2.5a.75.75 0 1 1 1.12-1l1.63 1.81 3.9-5.2a.75.75 0 1 1 1.2.9z" fill="currentColor"/>';
+                } else {
+                    el.classList.remove('met');
+                    icon.innerHTML = '<circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>';
+                }
+            });
+        }
+        
+        passwordInput.addEventListener('input', (e) => {
+            updateStrengthIndicator(e.target.value);
+        });
+        
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+        
+        function hideError() {
+            errorDiv.style.display = 'none';
+        }
+        
+        function setLoading(loading) {
+            submitBtn.disabled = loading;
+            if (loading) {
+                submitBtn.innerHTML = '<span class="spinner"></span>Creating account...';
+            } else {
+                submitBtn.innerHTML = 'Create account';
+            }
+        }
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+            
+            const password = passwordInput.value;
+            const confirmPassword = confirmPasswordInput.value;
+            
+            // Validate passwords match
+            if (password !== confirmPassword) {
+                showError('Passwords do not match');
+                return;
+            }
+            
+            // Validate password strength
+            const checks = checkPasswordStrength(password);
+            const score = Object.values(checks).filter(Boolean).length;
+            if (score < 5) {
+                showError('Password does not meet all requirements');
+                return;
+            }
+            
+            setLoading(true);
+            
+            const username = document.getElementById('username').value;
+            const email = document.getElementById('email').value;
+            
+            try {
+                const response = await fetch('/api/auth/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        username,
+                        email,
+                        password
+                    }),
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Registration failed');
+                }
+                
+                // Redirect to dashboard on success
+                window.location.href = '/dashboard';
+                
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                setLoading(false);
+            }
+        });
+    </script>
+</body>
+</html>

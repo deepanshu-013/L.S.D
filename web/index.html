@@ -1,44 +1,432 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>API Documentation</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>L.S.D - Large Search of Data</title>
+    <meta name="description" content="High-performance API for massive datasets. Search billions of records in milliseconds.">
+    <link rel="stylesheet" href="/style.css">
     <style>
-        body { margin: 0; padding: 0; }
-        
-        .api-reference-toolbar > div > div:nth-child(2),
-        .api-reference-toolbar button[aria-label*="Share"],
-        .api-reference-toolbar button[aria-label*="Generate"] {
-            display: none !important;
+        /* Page-specific styles */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8rem 2rem 4rem;
+            text-align: center;
+            position: relative;
+        }
+
+        .hero-content {
+            max-width: 900px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-full);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+
+        .hero-badge-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .hero h1 {
+            font-size: clamp(2.5rem, 8vw, 4.5rem);
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            letter-spacing: -2px;
+        }
+
+        .hero-description {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto 3rem;
+            line-height: 1.7;
+        }
+
+        .hero-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 2rem;
+            margin-top: 5rem;
+            padding-top: 4rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+
+        /* Sections */
+        .section {
+            padding: 6rem 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .section-alt {
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .section-tag {
+            display: inline-block;
+            color: var(--accent);
+            font-size: 0.85rem;
+            font-weight: 600;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 1rem;
+        }
+
+        .section-title {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+            letter-spacing: -1px;
+        }
+
+        .section-description {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.5rem;
+        }
+
+        /* Code Preview */
+        .code-preview {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .code-preview .code-window {
+            box-shadow: var(--shadow-lg);
+        }
+
+        /* Footer */
+        .footer {
+            padding: 4rem 2rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .footer-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: color 0.2s ease;
+        }
+
+        .footer-links a:hover {
+            color: var(--accent);
+        }
+
+        .footer-copy {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .footer-copy .heart {
+            color: var(--accent);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .hero h1 {
+                font-size: 2.5rem;
+            }
         }
     </style>
 </head>
 <body>
-    <script 
-        id="api-reference"
-        data-url="/swagger.yaml"
-        data-configuration='{"theme":"mars"}'>
-    </script>
-    
-    <script src="/assets/scalar-standalone.js"></script>
-    
+    <div class="bg-gradient"></div>
+    <div class="grid-pattern"></div>
+
+    <nav>
+        <div class="nav-container">
+            <a href="/" class="logo">
+                <div class="logo-icon">LSD</div>
+                <div>
+                    <span class="logo-text">L.S.D</span>
+                    <span class="logo-subtitle">Large Search of Data</span>
+                </div>
+            </a>
+            <div class="nav-links">
+                <a href="/docs">Documentation</a>
+                <a href="#features">Features</a>
+                <a href="https://github.com/Daveshvats/L.S.D" target="_blank">GitHub</a>
+                <a href="/login" class="btn btn-primary btn-sm">Get Started</a>
+            </div>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <div class="hero-content animate-fade-in">
+            <div class="hero-badge">
+                <span class="hero-badge-dot"></span>
+                v2.0 Now Available
+            </div>
+            <h1>
+                Search <span class="text-gradient">Billions</span> of Records<br>
+                in Milliseconds
+            </h1>
+            <p class="hero-description">
+                High-performance API for massive datasets. Built for AI agents, 
+                data pipelines, and applications that need lightning-fast search 
+                across PostgreSQL and ClickHouse.
+            </p>
+            <div class="hero-buttons">
+                <a href="/docs" class="btn btn-primary btn-lg">
+                    📚 View Documentation
+                </a>
+                <a href="/login" class="btn btn-secondary btn-lg">
+                    🚀 Get API Key
+                </a>
+            </div>
+
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value">20B+</div>
+                    <div class="stat-label">Records Supported</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">&lt;50ms</div>
+                    <div class="stat-label">Search Latency</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">5000</div>
+                    <div class="stat-label">Req/min AI Rate Limit</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">99.9%</div>
+                    <div class="stat-label">Uptime SLA</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="features">
+        <div class="section-header">
+            <span class="section-tag">Features</span>
+            <h2 class="section-title">Built for Scale</h2>
+            <p class="section-description">
+                Everything you need to search, filter, and analyze massive datasets with ease.
+            </p>
+        </div>
+
+        <div class="features-grid">
+            <div class="card">
+                <div class="card-icon">⚡</div>
+                <h3 class="card-title">Blazing Fast Search</h3>
+                <p class="card-description">
+                    Powered by ClickHouse bitmap indexing for sub-50ms searches across billions of records.
+                </p>
+            </div>
+            <div class="card">
+                <div class="card-icon">🔐</div>
+                <h3 class="card-title">Secure Authentication</h3>
+                <p class="card-description">
+                    JWT tokens + API keys with scoped permissions. Built-in rate limiting for AI agents.
+                </p>
+            </div>
+            <div class="card">
+                <div class="card-icon">🔄</div>
+                <h3 class="card-title">Real-time CDC</h3>
+                <p class="card-description">
+                    Automatic change data capture keeps your search index synchronized with PostgreSQL.
+                </p>
+            </div>
+            <div class="card">
+                <div class="card-icon">📊</div>
+                <h3 class="card-title">Smart Caching</h3>
+                <p class="card-description">
+                    Multi-layer caching with Redis for frequently accessed data and query results.
+                </p>
+            </div>
+            <div class="card">
+                <div class="card-icon">🤖</div>
+                <h3 class="card-title">AI Agent Ready</h3>
+                <p class="card-description">
+                    High rate limits (5000 req/min), predictable JSON responses, and comprehensive docs.
+                </p>
+            </div>
+            <div class="card">
+                <div class="card-icon">🚀</div>
+                <h3 class="card-title">Data Pipelines</h3>
+                <p class="card-description">
+                    Built-in pipeline processor for CSV imports with validation and error handling.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <section class="section-alt">
+        <div class="section">
+            <div class="section-header">
+                <span class="section-tag">Quick Start</span>
+                <h2 class="section-title">Start in Seconds</h2>
+            </div>
+            <div class="code-preview">
+                <div class="code-window">
+                    <div class="code-header">
+                        <span class="code-dot red"></span>
+                        <span class="code-dot yellow"></span>
+                        <span class="code-dot green"></span>
+                        <span class="code-title">api-request.sh</span>
+                    </div>
+                    <div class="code-content">
+                        <pre><span class="comment"># Search across billions of records</span>
+<span class="keyword">curl</span> <span class="string">"http://localhost:8080/api/search/?q=john"</span> \
+  -H <span class="string">"X-API-Key: lsd_live_your_api_key"</span>
+
+<span class="comment"># Response in &lt;50ms</span>
+{
+  <span class="string">"results"</span>: {
+    <span class="string">"users"</span>: [...],
+    <span class="string">"orders"</span>: [...]
+  },
+  <span class="string">"total_results"</span>: <span class="number">1523</span>,
+  <span class="string">"search_time_ms"</span>: <span class="number">42</span>
+}</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section">
+        <div class="section-header">
+            <span class="section-tag">AI Ready</span>
+            <h2 class="section-title">Built for AI Agents</h2>
+            <p class="section-description">
+                Designed with AI agents and automation workflows in mind. High rate limits, 
+                predictable responses, and comprehensive error handling.
+            </p>
+        </div>
+        <div style="max-width: 600px; margin: 0 auto; text-align: left;">
+            <div class="card" style="margin-bottom: 1rem;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div class="badge badge-success">✓</div>
+                    <div>
+                        <strong>5,000 requests/minute</strong>
+                        <p class="card-description" style="margin: 0;">High rate limits for AI agents</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card" style="margin-bottom: 1rem;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div class="badge badge-success">✓</div>
+                    <div>
+                        <strong>Scoped API Keys</strong>
+                        <p class="card-description" style="margin: 0;">Granular access control for different use cases</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div class="badge badge-success">✓</div>
+                    <div>
+                        <strong>Predictable JSON Responses</strong>
+                        <p class="card-description" style="margin: 0;">Consistent schema for easy parsing</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-links">
+                <a href="/docs">Documentation</a>
+                <a href="/login">Login</a>
+                <a href="/register">Register</a>
+                <a href="https://github.com/Daveshvats/L.S.D" target="_blank">GitHub</a>
+            </div>
+            <p class="footer-copy">
+                © 2025 L.S.D - Large Search of Data. Built with <span class="heart">❤️</span> for scale.
+            </p>
+        </div>
+    </footer>
+
     <script>
-        var removalInterval = setInterval(function() {
-            document.querySelectorAll('button, a').forEach(function(el) {
-                var text = (el.textContent || '').trim();
-                if (text.includes('Generate') || text.includes('SDK') || 
-                    text.includes('Share') || text.includes('Deploy')) {
-                    el.style.display = 'none';
-                    el.remove();
-                }
-            });
-        }, 200);
-        
-        setTimeout(function() {
-            clearInterval(removalInterval);
-            console.log('✅ Cleanup complete');
-        }, 10000);
+        // Theme management
+        function initTheme() {
+            const savedTheme = localStorage.getItem('lsd-theme') || 'dark';
+            document.body.classList.toggle('light-mode', savedTheme === 'light');
+        }
+        initTheme();
     </script>
 </body>
 </html>

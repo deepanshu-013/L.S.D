@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Documentation - L.S.D</title>
+    <meta name="description" content="L.S.D API Documentation - Search billions of records in milliseconds">
+    
+    <!-- Setup interceptors BEFORE Scalar loads -->
+    <script>
+        // Intercept fetch to add API key header
+        (function() {
+            const originalFetch = window.fetch;
+            window.fetch = function(input, init = {}) {
+                const savedKey = localStorage.getItem('lsd-api-key');
+                
+                if (savedKey) {
+                    init.headers = init.headers || {};
+                    
+                    if (init.headers instanceof Headers) {
+                        if (!init.headers.has('X-API-Key')) {
+                            init.headers.set('X-API-Key', savedKey);
+                        }
+                    } else if (Array.isArray(init.headers)) {
+                        let hasKey = init.headers.some(h => h[0] === 'X-API-Key');
+                        if (!hasKey) {
+                            init.headers.push(['X-API-Key', savedKey]);
+                        }
+                    } else {
+                        if (!init.headers['X-API-Key']) {
+                            init.headers['X-API-Key'] = savedKey;
+                        }
+                    }
+                    
+                    // Handle Request objects
+                    if (input instanceof Request) {
+                        const newHeaders = new Headers(input.headers);
+                        if (!newHeaders.has('X-API-Key')) {
+                            newHeaders.set('X-API-Key', savedKey);
+                        }
+                        return originalFetch(new Request(input, { ...init, headers: newHeaders }));
+                    }
+                }
+                
+                return originalFetch(input, init);
+            };
+        })();
+
+        // Intercept XMLHttpRequest
+        (function() {
+            const originalOpen = XMLHttpRequest.prototype.open;
+            const originalSend = XMLHttpRequest.prototype.send;
+            const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this._lsdUrl = String(url);
+                this._lsdMethod = method;
+                return originalOpen.apply(this, arguments);
+            };
+
+            XMLHttpRequest.prototype.send = function() {
+                const savedKey = localStorage.getItem('lsd-api-key');
+                if (savedKey) {
+                    try {
+                        originalSetRequestHeader.call(this, 'X-API-Key', savedKey);
+                    } catch(e) {}
+                }
+                return originalSend.apply(this, arguments);
+            };
+        })();
+    </script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #0a0a0a;
+            min-height: 100vh;
+        }
+
+        /* Top Navigation Bar */
+        .top-nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 56px;
+            background: rgba(15, 15, 15, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 1.5rem;
+            z-index: 1000;
+        }
+
+        .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, #f97316, #ea580c);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            color: #fff;
+        }
+
+        .logo-text {
+            font-weight: 600;
+            font-size: 1rem;
+            color: #fff;
+        }
+
+        .nav-badge {
+            background: rgba(249, 115, 22, 0.15);
+            color: #f97316;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .nav-link {
+            color: rgba(255, 255, 255, 0.7);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-link:hover {
+            color: #fff;
+        }
+
+        .api-key-btn {
+            padding: 0.5rem 1rem;
+            background: linear-gradient(135deg, #f97316, #ea580c);
+            border: none;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-family: inherit;
+        }
+
+        .api-key-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(249, 115, 22, 0.3);
+        }
+
+        .api-key-btn.configured {
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+        }
+
+        /* Scalar Container */
+        #api-reference {
+            padding-top: 56px;
+            min-height: 100vh;
+        }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.2s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .modal {
+            background: #1a1a1a;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            width: 100%;
+            max-width: 440px;
+            margin: 1rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .modal-subtitle {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+            line-height: 1.5;
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            margin-bottom: 0.5rem;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background: #0a0a0a;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 0.9rem;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            transition: all 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #f97316;
+            box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.15);
+        }
+
+        .form-input.valid {
+            border-color: #22c55e;
+        }
+
+        .form-input.invalid {
+            border-color: #ef4444;
+        }
+
+        .validation-message {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+        }
+
+        .validation-message.success {
+            color: #22c55e;
+        }
+
+        .validation-message.error {
+            color: #ef4444;
+        }
+
+        .form-hint {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+        }
+
+        .quick-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .quick-actions button {
+            padding: 0.5rem 0.75rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .quick-actions button:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        .info-box {
+            background: rgba(249, 115, 22, 0.1);
+            border: 1px solid rgba(249, 115, 22, 0.2);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+
+        .info-box p {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+
+        .info-box strong {
+            color: #fff;
+        }
+
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.75rem;
+        }
+
+        .btn {
+            padding: 0.625rem 1.25rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+            border: none;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #f97316, #ea580c);
+            color: #fff;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(249, 115, 22, 0.3);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary.success {
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+        }
+
+        /* Success State */
+        .success-icon {
+            width: 56px;
+            height: 56px;
+            background: rgba(34, 197, 94, 0.15);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            color: #22c55e;
+            margin: 0 auto 1rem;
+        }
+
+        .key-display {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            background: #0a0a0a;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .key-display code {
+            flex: 1;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.9rem;
+            color: #fff;
+        }
+
+        .copy-btn {
+            padding: 0.4rem 0.6rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            color: rgba(255, 255, 255, 0.7);
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+            font-size: 0.85rem;
+        }
+
+        .copy-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .top-nav {
+                padding: 0 1rem;
+            }
+
+            .nav-link {
+                display: none;
+            }
+
+            .modal {
+                margin: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation -->
+    <nav class="top-nav">
+        <div class="nav-left">
+            <a href="/" class="logo">
+                <div class="logo-icon">LSD</div>
+                <span class="logo-text">L.S.D</span>
+            </a>
+            <span class="nav-badge">API Docs</span>
+        </div>
+        <div class="nav-right">
+            <a href="/" class="nav-link">Home</a>
+            <button class="api-key-btn" id="apiKeyBtn" onclick="openModal()">
+                <span>🔑</span> Configure API Key
+            </button>
+        </div>
+    </nav>
+
+    <!-- Scalar API Reference Container with Mars theme -->
+    <div id="api-reference" data-configuration='{"url":"/swagger.yaml","theme":"mars","darkMode":true,"layout":"modern"}'></div>
+
+    <!-- API Key Modal -->
+    <div class="modal-overlay" id="modal-overlay" onclick="handleOverlayClick(event)">
+        <div class="modal" id="api-key-modal">
+            <!-- Initial State -->
+            <div id="modal-initial">
+                <div class="modal-header">
+                    <h2 class="modal-title">🔑 Configure API Key</h2>
+                    <p class="modal-subtitle">
+                        Enter your API key to test endpoints directly from the documentation.
+                        Your key is stored locally in your browser.
+                    </p>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label">API Key</label>
+                        <input 
+                            type="text" 
+                            id="api-key-input" 
+                            class="form-input" 
+                            placeholder="lsd_live_xxxxxxxxxxxxxxxx"
+                            autocomplete="off"
+                            oninput="validateApiKey(this.value)"
+                            onkeydown="handleKeyDown(event)"
+                        >
+                        <div id="validation-message" class="validation-message" style="display: none;"></div>
+                        <p class="form-hint">
+                            Your API key is stored locally in your browser's localStorage.
+                        </p>
+                    </div>
+                    <div class="quick-actions">
+                        <a href="/dashboard" target="_blank">
+                            <button type="button" style="background: linear-gradient(135deg, #f97316, #ea580c); color: #fff;">🔐 Create API Key</button>
+                        </a>
+                        <button type="button" onclick="setDemoKey()">Test Format Only</button>
+                    </div>
+                    <div class="info-box">
+                        <p>
+                            <strong>⚠️ Important:</strong> You need a <strong>real API key</strong> from your dashboard to make actual API calls.
+                            The "Test Format Only" button just validates the key format - it won't authenticate with the server.
+                        </p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="save-btn" onclick="saveApiKey()" disabled>
+                        ✓ Save & Continue
+                    </button>
+                </div>
+            </div>
+
+            <!-- Success State -->
+            <div id="modal-success" style="display: none;">
+                <div class="modal-header" style="text-align: center;">
+                    <div class="success-icon">✓</div>
+                    <h2 class="modal-title" style="justify-content: center;">
+                        API Key Configured
+                    </h2>
+                    <p class="modal-subtitle">
+                        You can now test endpoints directly from the documentation.
+                    </p>
+                </div>
+                <div class="modal-body">
+                    <div class="key-display">
+                        <code id="saved-key-display">lsd_live_****...</code>
+                        <button type="button" class="copy-btn" onclick="copyKey()" title="Copy">📋</button>
+                    </div>
+                    <div class="info-box">
+                        <p>
+                            Your API key is active and will be used for all API requests in this documentation.
+                            <br><br>
+                            <strong>Rate Limits:</strong> 5,000 requests/minute for AI agents
+                        </p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="showInitial()">Change Key</button>
+                    <button type="button" class="btn btn-primary success" onclick="closeModal()">
+                        ✓ Done
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scalar Standalone Script (loads after interceptors are set up) -->
+    <script src="/assets/scalar-standalone.js"></script>
+    
+    <!-- Modal and UI Logic -->
+    <script>
+        // API Key Validation
+        function validateApiKey(value) {
+            const input = document.getElementById('api-key-input');
+            const message = document.getElementById('validation-message');
+            const saveBtn = document.getElementById('save-btn');
+            
+            const trimmedValue = value.trim();
+            
+            if (!trimmedValue) {
+                input.classList.remove('valid', 'invalid');
+                message.style.display = 'none';
+                saveBtn.disabled = true;
+                return false;
+            }
+            
+            const isValid = /^(lsd_live_|lsd_test_)[a-zA-Z0-9_]{16,}$/.test(trimmedValue);
+            
+            if (isValid) {
+                input.classList.add('valid');
+                input.classList.remove('invalid');
+                message.style.display = 'flex';
+                message.className = 'validation-message success';
+                message.innerHTML = '✓ Valid API key format';
+                saveBtn.disabled = false;
+                return true;
+            } else {
+                input.classList.add('invalid');
+                input.classList.remove('valid');
+                message.style.display = 'flex';
+                message.className = 'validation-message error';
+                
+                if (!trimmedValue.startsWith('lsd_live_') && !trimmedValue.startsWith('lsd_test_')) {
+                    message.innerHTML = '✗ Key should start with "lsd_live_" or "lsd_test_"';
+                } else if (trimmedValue.length < 26) {
+                    message.innerHTML = '✗ API key appears to be too short';
+                } else {
+                    message.innerHTML = '✗ Invalid API key format';
+                }
+                saveBtn.disabled = true;
+                return false;
+            }
+        }
+
+        function openModal() {
+            document.getElementById('modal-overlay').classList.add('active');
+            document.body.style.overflow = 'hidden';
+            
+            const savedKey = localStorage.getItem('lsd-api-key');
+            if (savedKey) {
+                document.getElementById('api-key-input').value = savedKey;
+                validateApiKey(savedKey);
+            }
+            
+            setTimeout(() => document.getElementById('api-key-input').focus(), 100);
+        }
+
+        function closeModal() {
+            document.getElementById('modal-overlay').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        function handleOverlayClick(event) {
+            if (event.target === event.currentTarget) closeModal();
+        }
+
+        function showInitial() {
+            document.getElementById('modal-initial').style.display = 'block';
+            document.getElementById('modal-success').style.display = 'none';
+            document.getElementById('api-key-input').value = '';
+            document.getElementById('api-key-input').classList.remove('valid', 'invalid');
+            document.getElementById('validation-message').style.display = 'none';
+            document.getElementById('save-btn').disabled = true;
+        }
+
+        function setDemoKey() {
+            const demoKey = 'lsd_live_demo_key_for_testing_purposes';
+            document.getElementById('api-key-input').value = demoKey;
+            validateApiKey(demoKey);
+        }
+
+        function saveApiKey() {
+            const apiKey = document.getElementById('api-key-input').value.trim();
+            
+            if (!validateApiKey(apiKey)) return false;
+
+            localStorage.setItem('lsd-api-key', apiKey);
+            updateApiKeyButton(true);
+
+            document.getElementById('modal-initial').style.display = 'none';
+            document.getElementById('modal-success').style.display = 'block';
+            
+            const maskedKey = apiKey.substring(0, 12) + '****' + apiKey.substring(apiKey.length - 4);
+            document.getElementById('saved-key-display').textContent = maskedKey;
+            
+            return true;
+        }
+
+        function copyKey() {
+            const apiKey = localStorage.getItem('lsd-api-key');
+            if (apiKey) {
+                navigator.clipboard.writeText(apiKey).then(() => {
+                    const btn = document.querySelector('.copy-btn');
+                    btn.textContent = '✓';
+                    setTimeout(() => btn.textContent = '📋', 1500);
+                });
+            }
+        }
+
+        function updateApiKeyButton(hasKey) {
+            const btn = document.getElementById('apiKeyBtn');
+            if (hasKey) {
+                btn.classList.add('configured');
+                btn.innerHTML = '<span>✓</span> API Key Set';
+            } else {
+                btn.classList.remove('configured');
+                btn.innerHTML = '<span>🔑</span> Configure API Key';
+            }
+        }
+
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !document.getElementById('save-btn').disabled) {
+                event.preventDefault();
+                saveApiKey();
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedKey = localStorage.getItem('lsd-api-key');
+            if (savedKey) updateApiKeyButton(true);
+        });
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') closeModal();
+        });
+    </script>
+</body>
+</html>

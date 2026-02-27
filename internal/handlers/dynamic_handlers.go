@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -291,77 +290,7 @@ func (h *DynamicHandler) SearchRecords(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *DynamicHandler) GlobalSearch(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		h.writeError(w, http.StatusBadRequest, "Query parameter 'q' is required")
-		return
-	}
-
-	if len(query) < 2 || len(query) > 100 {
-		h.writeError(w, http.StatusBadRequest, "Search term must be 2-100 characters")
-		return
-	}
-
-	limit := 20
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
-			limit = parsed
-		}
-	}
-
-	exactMatch := r.URL.Query().Get("exact") == "true"
-	cursor := r.URL.Query().Get("cursor")
-
-	var dateFrom *time.Time
-	if df := r.URL.Query().Get("date_from"); df != "" {
-		if parsed, err := time.Parse("2006-01-02", df); err == nil {
-			dateFrom = &parsed
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	if h.chSearch == nil || !h.chSearch.IsAvailable() {
-		h.writeError(w, http.StatusServiceUnavailable, "ClickHouse search not available")
-		return
-	}
-
-	startTime := time.Now()
-	result, err := h.chSearch.GlobalSearchParallel(ctx, query, limit, cursor, exactMatch, dateFrom)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, "Search failed: "+err.Error())
-		return
-	}
-
-	duration := time.Since(startTime)
-
-	tableGroups := make(map[string][]map[string]interface{})
-	for _, record := range result.Data {
-		if sourceTable, ok := record["_source_table"].(string); ok {
-			tableGroups[sourceTable] = append(tableGroups[sourceTable], record)
-		}
-	}
-
-	h.writeJSONCompressed(w, r, http.StatusOK, map[string]interface{}{
-		"results":              tableGroups,
-		"total_results":        result.Count,
-		"has_more":             result.HasMore,
-		"next_cursor":          result.NextCursor,
-		"tables_searched":      len(tableGroups),
-		"search_time":          duration.Milliseconds(),
-		"query":                query,
-		"limit":                limit,
-		"cursor":               cursor,
-		"exact_match":          exactMatch,
-		"date_from":            dateFrom,
-		"search_engine":        "clickhouse_parallel",
-		"clickhouse_available": true,
-	})
-}
-
-func (h *DynamicHandler) GlobalSearchParallel(w http.ResponseWriter, r *http.Request) {
+func (h *DynamicHandler) SearchOptimized(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	cursor := r.URL.Query().Get("cursor")
 
@@ -382,33 +311,26 @@ func (h *DynamicHandler) GlobalSearchParallel(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	exactMatch := r.URL.Query().Get("exact") == "true"
-
-	var dateFrom *time.Time
-	if df := r.URL.Query().Get("date_from"); df != "" {
-		if parsed, err := time.Parse("2006-01-02", df); err == nil {
-			dateFrom = &parsed
-		}
+	if h.chSearch == nil || !h.chSearch.IsAvailable() {
+		h.writeError(w, http.StatusServiceUnavailable, "ClickHouse not available")
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	if h.chSearch == nil || !h.chSearch.IsAvailable() {
-		h.writeError(w, http.StatusServiceUnavailable, "ClickHouse search not available")
-		return
-	}
-
+	// ⭐ FIXED: Added timing
 	startTime := time.Now()
-	result, err := h.chSearch.GlobalSearchParallel(ctx, query, limit, cursor, exactMatch, dateFrom)
+	result, err := h.chSearch.SearchFullHistoryBitmap(ctx, query, limit, cursor)
+
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, "Search failed: "+err.Error())
+		h.writeError(w, http.StatusInternalServerError, "Optimized search failed: "+err.Error())
 		return
 	}
 
 	duration := time.Since(startTime)
 
-	// Group by table
+	// Group results by table for the JSON structure
 	tableGroups := make(map[string][]map[string]interface{})
 	for _, record := range result.Data {
 		if sourceTable, ok := record["_source_table"].(string); ok {
@@ -416,154 +338,24 @@ func (h *DynamicHandler) GlobalSearchParallel(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// ⭐ UPDATED RESPONSE
 	h.writeJSONCompressed(w, r, http.StatusOK, map[string]interface{}{
-		"results":              tableGroups,
-		"total_results":        result.Count,
-		"has_more":             result.HasMore,
-		"next_cursor":          result.NextCursor,
-		"tables_queried":       result.TablesQueried, // ⭐ NEW: All tables searched
-		"tables_in_results":    len(tableGroups),     // ⭐ NEW: Tables in final response
-		"search_time":          duration.Milliseconds(),
-		"query":                query,
-		"limit":                limit,
-		"cursor":               cursor,
-		"exact_match":          exactMatch,
-		"date_from":            dateFrom,
-		"search_engine":        "clickhouse_parallel",
-		"clickhouse_available": true,
+		"results":       tableGroups,
+		"total_results": result.Count,
+		"has_more":      result.HasMore,
+		"next_cursor":   result.NextCursor,
+		"search_time":   duration.Milliseconds(), // ⭐ FIXED: Actual time in ms
+		"query":         query,
+		"limit":         limit,
+		"search_engine": "clickhouse_optimized_map",
 	})
 }
 
-func (h *DynamicHandler) GlobalSearchThreeLayer(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		h.writeError(w, http.StatusBadRequest, "Query parameter 'q' is required")
-		return
-	}
-
-	if len(query) < 2 || len(query) > 100 {
-		h.writeError(w, http.StatusBadRequest, "Search term must be 2-100 characters")
-		return
-	}
-
-	limit := 20
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
-			limit = parsed
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	if h.cdcManager == nil {
-		h.writeError(w, http.StatusServiceUnavailable, "Search service not available")
-		return
-	}
-
-	entityRepo := h.cdcManager.GetEntityRepository()
-	if entityRepo == nil || !entityRepo.IsEnabled() {
-		h.writeError(w, http.StatusServiceUnavailable, "Entity search not enabled. Use /api/search/parallel instead.")
-		return
-	}
-
-	startTime := time.Now()
-	results, totalMatches, err := entityRepo.SearchThreeLayer(ctx, query, limit)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, "Search failed: "+err.Error())
-		return
-	}
-
-	duration := time.Since(startTime)
-
-	tableGroups := make(map[string][]map[string]interface{})
-	for _, record := range results {
-		if sourceTable, ok := record["_source_table"].(string); ok {
-			tableGroups[sourceTable] = append(tableGroups[sourceTable], record)
-		}
-	}
-
-	h.writeJSONCompressed(w, r, http.StatusOK, map[string]interface{}{
-		"results":         tableGroups,
-		"total_results":   len(results),
-		"total_matches":   totalMatches,
-		"tables_searched": len(tableGroups),
-		"search_time":     duration.Milliseconds(),
-		"query":           query,
-		"limit":           limit,
-		"search_engine":   "three_layer_entity",
-		"method":          "token_to_entity_to_table",
-	})
-}
-
-func (h *DynamicHandler) GlobalSearchHybrid(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		h.writeError(w, http.StatusBadRequest, "Query parameter 'q' is required")
-		return
-	}
-
-	useEntitySearch := h.shouldUseEntitySearch(query)
-
-	if useEntitySearch && h.cdcManager != nil {
-		entityRepo := h.cdcManager.GetEntityRepository()
-		if entityRepo != nil && entityRepo.IsEnabled() {
-			log.Printf("[Hybrid] Using entity search for: %s", query)
-			h.GlobalSearchThreeLayer(w, r)
-			return
-		}
-	}
-
-	log.Printf("[Hybrid] Using parallel search for: %s", query)
-	h.GlobalSearchParallel(w, r)
-}
-
-func (h *DynamicHandler) shouldUseEntitySearch(query string) bool {
-	words := strings.Fields(query)
-	if len(words) >= 2 {
-		return true
-	}
-
-	lowerQuery := strings.ToLower(query)
-	entityHints := []string{"@", ".com", "pvt", "ltd", "inc", "corp"}
-	for _, hint := range entityHints {
-		if strings.Contains(lowerQuery, hint) {
-			return true
-		}
-	}
-
-	return false
-}
-
+// Update GetEntityStats
 func (h *DynamicHandler) GetEntityStats(w http.ResponseWriter, r *http.Request) {
-	if h.cdcManager == nil {
-		h.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"enabled": false,
-			"message": "Entity search not available",
-		})
-		return
-	}
-
-	entityRepo := h.cdcManager.GetEntityRepository()
-	if entityRepo == nil {
-		h.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"enabled": false,
-			"message": "Entity repository not initialized",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	stats, err := entityRepo.GetStats(ctx)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, "Failed to get stats: "+err.Error())
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, stats)
+	h.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+		"enabled": false,
+		"message": "Entity layer is disabled.",
+	})
 }
 
 func (h *DynamicHandler) ReindexEntities(w http.ResponseWriter, r *http.Request) {
@@ -637,12 +429,11 @@ func (h *DynamicHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":       "healthy",
-		"service":      "dynamic-api",
+		"status":       "UP",
+		"service":      "L.S.D",
 		"tables_count": len(tables),
 		"clickhouse":   clickhouseAvailable,
 		"redis":        h.cache.IsAvailable(),
-		"optimized":    os.Getenv("USE_OPTIMIZED_SEARCH") == "true",
 	})
 }
 
@@ -701,16 +492,31 @@ func (h *DynamicHandler) writeJSON(w http.ResponseWriter, status int, data inter
 }
 
 func (h *DynamicHandler) writeJSONCompressed(w http.ResponseWriter, r *http.Request, status int, data interface{}) {
-	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+	// 1. Always set Content-Type
+	w.Header().Set("Content-Type", "application/json")
+
+	// 2. Check if the client supports Gzip (Browsers always do)
+	// We use 'strings.Contains' to be safe against varied header formats
+	acceptsGzip := strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip")
+
+	if acceptsGzip {
 		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
+
+		// Create a Gzip writer
 		gz := gzip.NewWriter(w)
 		defer gz.Close()
-		json.NewEncoder(gz).Encode(data)
+
+		// Encode directly to the Gzip stream
+		// This happens in-memory and streams out compressed
+		if err := json.NewEncoder(gz).Encode(data); err != nil {
+			// Log the error but don't panic, we've already written status code
+			log.Printf("Error encoding gzip response: %v", err)
+		}
 		return
 	}
 
+	// 3. Fallback only if client doesn't support Gzip
 	h.writeJSON(w, status, data)
 }
 
